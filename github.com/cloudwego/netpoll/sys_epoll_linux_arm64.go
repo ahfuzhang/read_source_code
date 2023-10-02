@@ -46,15 +46,15 @@ func EpollCtl(epfd int, op int, fd int, event *epollevent) (err error) {
 	return err
 }
 
-// EpollWait implements epoll_wait.
+// EpollWait implements epoll_wait.  // events 为  128，最多读  128 条事件
 func EpollWait(epfd int, events []epollevent, msec int) (n int, err error) {
 	var r0 uintptr
 	var _p0 = unsafe.Pointer(&events[0])
-	if msec == 0 {
+	if msec == 0 {  // 0 代表立即返回，因此能使用 RawSyScall，直接使用系统调用指令
 		r0, _, err = syscall.RawSyscall6(syscall.SYS_EPOLL_PWAIT, uintptr(epfd), uintptr(_p0), uintptr(len(events)), 0, 0, 0)
 	} else {
 		r0, _, err = syscall.Syscall6(syscall.SYS_EPOLL_PWAIT, uintptr(epfd), uintptr(_p0), uintptr(len(events)), uintptr(msec), 0, 0)
-	}
+	}  // syscall.Syscall6 则通过特殊方式让 go 协程调度不会发生问题
 	if err == syscall.Errno(0) {
 		err = nil
 	}

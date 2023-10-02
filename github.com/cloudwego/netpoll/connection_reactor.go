@@ -81,23 +81,23 @@ func (c *connection) closeBuffer() {
 
 // inputs implements FDOperator.  // 用户客户端 fd, 在 epoll 事件循环中被回调
 func (c *connection) inputs(vs [][]byte) (rs [][]byte) {
-	vs[0] = c.inputBuffer.book(c.bookSize, c.maxSize)
-	return vs[:1]
-}
+	vs[0] = c.inputBuffer.book(c.bookSize, c.maxSize) // 第 0 个数据快订阅数据  // 猜测是分配了 8kb 的缓冲区  // c.bookSize,c.maxSize 默认值 8kb
+	return vs[:1]                                     // 返回第 0 块
+} // vs[0] 指向了 8kb 的内存区域, 这个区域是 newLinkBufferNode() 通过  slab 分配的
 
-// inputAck implements FDOperator.
-func (c *connection) inputAck(n int) (err error) {
+// inputAck implements FDOperator.  // 调用 readv 后，再调用这里。 n 是读出的字节数
+func (c *connection) inputAck(n int) (err error) { // inputAck 意思是对  input 这个行为的回应
 	if n <= 0 {
 		c.inputBuffer.bookAck(0)
 		return nil
 	}
 
 	// Auto size bookSize.
-	if n == c.bookSize && c.bookSize < mallocMax {
-		c.bookSize <<= 1
+	if n == c.bookSize && c.bookSize < mallocMax { // 如果数据量很大，一次就把  8kb读满了，那么空间翻倍
+		c.bookSize <<= 1 // 乘 2，变成了 16kb
 	}
 
-	length, _ := c.inputBuffer.bookAck(n)
+	length, _ := c.inputBuffer.bookAck(n) // 更新真正读取的总长度
 	if c.maxSize < length {
 		c.maxSize = length
 	}
@@ -107,10 +107,10 @@ func (c *connection) inputAck(n int) (err error) {
 
 	var needTrigger = true
 	if length == n { // first start onRequest
-		needTrigger = c.onRequest()
+		needTrigger = c.onRequest() // 原来 on request 是这里触发的  // 只要有数据，就会触发一次 onRequest
 	}
 	if needTrigger && length >= int(atomic.LoadInt64(&c.waitReadSize)) {
-		c.triggerRead(nil)
+		c.triggerRead(nil) // 等到期待的长度达到后，再次进行触发
 	}
 	return nil
 }

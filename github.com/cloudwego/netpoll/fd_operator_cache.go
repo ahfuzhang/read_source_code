@@ -20,7 +20,7 @@ import (
 	"unsafe"
 )
 
-func newOperatorCache() *operatorCache {
+func newOperatorCache() *operatorCache {  // ??? 不知道用来干啥  defaultPoll 结构的成员变量
 	return &operatorCache{
 		cache:    make([]*FDOperator, 0, 1024),
 		freelist: make([]int32, 0, 1024),

@@ -33,7 +33,7 @@ import (
 //	func init() {
 //	    netpoll.SetNumLoops(...)
 //	}
-func SetNumLoops(numLoops int) error {
+func SetNumLoops(numLoops int) error {  // 默认每 20 个核，使用一个 epoll_wait 协程
 	return setNumLoops(numLoops)
 }
 
@@ -53,7 +53,7 @@ func SetLoggerOutput(w io.Writer) {
 // Usually, OnRequest will cause stack expansion, which can be solved by reusing goroutine.
 // But if you can confirm that the OnRequest will not cause stack expansion,
 // it is recommended to use DisableGopool to reduce redundancy and improve performance.
-func DisableGopool() error {
+func DisableGopool() error {  // 禁用以后，每次数据到达都会  go 出来协程
 	return disableGopool()
 }
 

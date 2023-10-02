@@ -30,14 +30,14 @@ func openPoll() (Poll, error) {
 func openDefaultPoll() (*defaultPoll, error) { // linux 下事件循环的核心类
 	var poll = new(defaultPoll)
 
-	poll.buf = make([]byte, 8)  // 为什么要分配  8  字节的空间?
+	poll.buf = make([]byte, 8)  // 一开始分配了 8 字节, 用于读取 eventfd 的信息. 我认为写成 [8]byte 更好
 	var p, err = EpollCreate(0) // 调用 epoll_create
 	if err != nil {
 		return nil, err
 	}
 	poll.fd = p // epoll 的 fd
 
-	var r0, _, e0 = syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0, 0)
+	var r0, _, e0 = syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0, 0)  // 创建一个用于  timer 等需求的 eventfd
 	if e0 != 0 {
 		_ = syscall.Close(poll.fd)
 		return nil, e0
@@ -47,22 +47,22 @@ func openDefaultPoll() (*defaultPoll, error) { // linux 下事件循环的核心
 	poll.Handler = poll.handler
 	poll.wop = &FDOperator{FD: int(r0)}
 
-	if err = poll.Control(poll.wop, PollReadable); err != nil {
+	if err = poll.Control(poll.wop, PollReadable); err != nil {  // 监听 eventfd 上的读事件
 		_ = syscall.Close(poll.wop.FD)
 		_ = syscall.Close(poll.fd)
 		return nil, err
 	}
 
-	poll.opcache = newOperatorCache()
+	poll.opcache = newOperatorCache()  // ??? 不知道这个结构用来干嘛的
 	return poll, nil
 }
 
 type defaultPoll struct {
 	pollArgs
 	fd      int            // epoll fd
-	wop     *FDOperator    // eventfd, wake epoll_wait
-	buf     []byte         // read wfd trigger msg  // 这个 buf 哪里来的???
-	trigger uint32         // trigger flag
+	wop     *FDOperator    // eventfd, wake epoll_wait  // 用来做定时器的功能
+	buf     []byte         // read wfd trigger msg  // 一开始分配了 8 字节, 用于读取 eventfd 的信息
+	trigger uint32         // trigger flag， 当 eventfd 触发时，用这个代表触发的标志
 	m       sync.Map       // only used in go:race  // 使用这个来管理 fd 的列表
 	opcache *operatorCache // operator cache
 	// fns for handle events
@@ -71,18 +71,18 @@ type defaultPoll struct {
 }
 
 type pollArgs struct {  // ??? 这个结构在哪里初始化的? reset() 里
-	size     int
-	caps     int
+	size     int  // 每次读取事件的条数，一开始 128
+	caps     int  // 用于 readv / write 内的数组长度， 默认 32
 	events   []epollevent  // 事件的数组
-	barriers []barrier
+	barriers []barrier  // 为了方便使用 readv 或  writev 而定义的结构
 	hups     []func(p Poll) error
 }
-
-func (a *pollArgs) reset(size, caps int) {
+// 修改每次最大的接收事件的条数
+func (a *pollArgs) reset(size, caps int) {  // 为了能够容纳 n 个事件，而提前定义结构
 	a.size, a.caps = size, caps
-	a.events, a.barriers = make([]epollevent, size), make([]barrier, size)
+	a.events, a.barriers = make([]epollevent, size), make([]barrier, size)  // 两个数组是同样大的
 	for i := range a.barriers {
-		a.barriers[i].bs = make([][]byte, a.caps)
+		a.barriers[i].bs = make([][]byte, a.caps)  // 与  2 的  32 次方相关
 		a.barriers[i].ivs = make([]syscall.Iovec, a.caps)
 	}
 }
@@ -92,26 +92,26 @@ func (p *defaultPoll) Wait() (err error) { // 在一个独立协程中使用 epo
 	// init
 	var caps, msec, n = barriercap, -1, 0
 	p.Reset(128, caps)  // barriercap = 32  // 初始化  pollArgs
-	// wait
+	// wait  // 认为初始化 128 个事件，认为可以使用 32 块的 readv
 	for { // 核心事件循环
 		if n == p.size && p.size < 128*1024 {
-			p.Reset(p.size<<1, caps)
+			p.Reset(p.size<<1, caps) // 如果触发了 128 条事件，则事件数组扩容一倍
 		}
-		n, err = EpollWait(p.fd, p.events, msec)  // epoll_wait 系统调用
+		n, err = EpollWait(p.fd, p.events, msec)  // epoll_wait 系统调用, 读 128 条事件
 		if err != nil && err != syscall.EINTR {
 			return err
 		}
 		if n <= 0 {
-			msec = -1
+			msec = -1  // -1  代表永远等待
 			runtime.Gosched() // 主动让出协程的时间片
 			continue
 		}
-		msec = 0
+		msec = 0  // 0 代表立即返回
 		if p.Handler(p.events[:n]) { // 处理所有触发事件的 fd
 			return nil
 		}
 		// we can make sure that there is no op remaining if Handler finished
-		p.opcache.free()
+		p.opcache.free()  // ??? 
 	}
 }
 
@@ -132,12 +132,12 @@ func (p *defaultPoll) handler(events []epollevent) (closed bool) { // 当事件�
 		triggerError = evt&syscall.EPOLLERR != 0
 
 		// trigger or exit gracefully
-		if operator.FD == p.wop.FD {  // ??? 看不懂
+		if operator.FD == p.wop.FD {  // 如果是 eventfd 触发了事件，就处理定时器等逻辑
 			// must clean trigger first
 			syscall.Read(p.wop.FD, p.buf)
 			atomic.StoreUint32(&p.trigger, 0)
 			// if closed & exit
-			if p.buf[0] > 0 {
+			if p.buf[0] > 0 {  // ??? 难道是内部约定了一个值吗? 这个信号表明这个 socket 应该关闭了
 				syscall.Close(p.wop.FD)
 				syscall.Close(p.fd)
 				operator.done()
@@ -152,16 +152,16 @@ func (p *defaultPoll) handler(events []epollevent) (closed bool) { // 当事件�
 				// for non-connection
 				operator.OnRead(p) // 对于 tcp server，这里调用 netpoll_server.go 里 的  server.OnRead() 方法
 			} else if operator.Inputs != nil {
-				// for connection
-				var bs = operator.Inputs(p.barriers[i].bs) // 触发读操作  FDOperator 对象
-				if len(bs) > 0 {
-					var n, err = ioread(operator.FD, bs, p.barriers[i].ivs)
-					operator.InputAck(n)
-					totalRead += n
+				// for connection  // client fd 只会触发 inputs // 这一行, i 可能会越界
+				var bs = operator.Inputs(p.barriers[i].bs) // 触发读操作  FDOperator 对象  //operator.Inputs 把 v[0] 分配 8kb 空间，然后返回第 0 块
+				if len(bs) > 0 {  // 对应 connection 对象的 inputs
+					var n, err = ioread(operator.FD, bs, p.barriers[i].ivs) // 使用 readv 读取, 上面分配的空间是 8kb，那么第一次最多读取 8kb
+					operator.InputAck(n)  // goto func (c *connection) inputAck(n int)  // n 是实际读出的字节数  // 猜测是累加读取的总长度
+					totalRead += n  // 读出的字节数
 					if err != nil {
 						p.appendHup(operator)
 						continue
-					}
+					}  // ??? client fd 读完数据后，怎么触发到用户协程那边?
 				}
 			} else {
 				logger.Printf("NETPOLL: operator has critical problem! event=%d operator=%v", evt, operator)

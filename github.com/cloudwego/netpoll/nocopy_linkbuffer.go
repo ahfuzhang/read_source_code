@@ -34,16 +34,16 @@ import (
 const BinaryInplaceThreshold = block4k
 
 // LinkBufferCap that can be modified marks the minimum value of each node of LinkBuffer.
-var LinkBufferCap = block4k
+var LinkBufferCap = block4k  // ??? 不懂，为什么块的大小要定义为变量  // 没有任何一个地方二次赋值
 
 // NewLinkBuffer size defines the initial capacity, but there is no readable data.
-func NewLinkBuffer(size ...int) *LinkBuffer {
+func NewLinkBuffer(size ...int) *LinkBuffer {  // 构造一个新的链表内存池, 通常 size 不填，或者 size=8kb
 	var buf = &LinkBuffer{}
 	var l int
 	if len(size) > 0 {
 		l = size[0]
 	}
-	var node = newLinkBufferNode(l)
+	var node = newLinkBufferNode(l)  // 申请一个链表节点
 	buf.head, buf.read, buf.flush, buf.write = node, node, node, node
 	return buf
 }
@@ -53,10 +53,10 @@ type LinkBuffer struct {
 	length     int64
 	mallocSize int
 
-	head  *linkBufferNode // release head
+	head  *linkBufferNode // release head  // 初始化的时候，只初始化了这四个字段
 	read  *linkBufferNode // read head
 	flush *linkBufferNode // malloc head
-	write *linkBufferNode // malloc tail
+	write *linkBufferNode // malloc tail  // 在  book 方法中，分配 8kb
 
 	caches [][]byte // buf allocated by Next when cross-package, which should be freed when release
 }
@@ -577,10 +577,10 @@ func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {
 //
 // bookSize: The size of data that can be read at once.
 // maxSize: The maximum size of data between two Release(). In some cases, this can
-//
+//    bookSize, maxSize 初始值为 8kb
 //	guarantee all data allocated in one node to reduce copy.
-func (b *LinkBuffer) book(bookSize, maxSize int) (p []byte) {
-	l := cap(b.write.buf) - b.write.malloc
+func (b *LinkBuffer) book(bookSize, maxSize int) (p []byte) {  // c.inputBuffer 一开始是  8kb  空间  // bookSize, maxSize int 一开始 8kb
+	l := cap(b.write.buf) - b.write.malloc // l = 8kb
 	// grow linkBuffer
 	if l == 0 {
 		l = maxSize
@@ -590,19 +590,19 @@ func (b *LinkBuffer) book(bookSize, maxSize int) (p []byte) {
 	if l > bookSize {
 		l = bookSize
 	}
-	return b.write.Malloc(l)
-}
+	return b.write.Malloc(l)  // 猜测第一次分配了 8kb 缓冲区  // 第一次， 在 inputBuffer 的  write 上再分配 8kb
+}   // b.write.Malloc(l) 把 newLinkBufferNode() 中分配的 8kb 拿出来用
 
 // bookAck will ack the first n malloc bytes and discard the rest.
 //
 // length: The size of data in inputBuffer. It is used to calculate the maxSize
-func (b *LinkBuffer) bookAck(n int) (length int, err error) {
-	b.write.malloc = n + len(b.write.buf)
-	b.write.buf = b.write.buf[:b.write.malloc]
+func (b *LinkBuffer) bookAck(n int) (length int, err error) {  // n 是  readv 实际读出的字节数  // book() 是订阅空间， bookAck 是对订阅空间的回应。
+	b.write.malloc = n + len(b.write.buf)  // n + 8kb ??? 啥意思
+	b.write.buf = b.write.buf[:b.write.malloc]  // 这样不是越界了吗?
 	b.flush = b.write
 
 	// re-cal length
-	length = b.recalLen(n)
+	length = b.recalLen(n)  // 累加总长度
 	return length, nil
 }
 
@@ -664,7 +664,7 @@ func (b *LinkBuffer) resetTail(maxSize int) {
 }
 
 // recalLen re-calculate the length
-func (b *LinkBuffer) recalLen(delta int) (length int) {
+func (b *LinkBuffer) recalLen(delta int) (length int) {  // 累加总长度
 	return int(atomic.AddInt64(&b.length, int64(delta)))
 }
 
@@ -672,8 +672,8 @@ func (b *LinkBuffer) recalLen(delta int) (length int) {
 
 // newLinkBufferNode create or reuse linkBufferNode.
 // Nodes with size <= 0 are marked as readonly, which means the node.buf is not allocated by this mcache.
-func newLinkBufferNode(size int) *linkBufferNode {
-	var node = linkedPool.Get().(*linkBufferNode)
+func newLinkBufferNode(size int) *linkBufferNode {  // size 通常为 0，或者为  8kb
+	var node = linkedPool.Get().(*linkBufferNode)  // 从内存池取一个节点
 	// reset node offset
 	node.off, node.malloc, node.refer, node.readonly = 0, 0, 1, false
 	if size <= 0 {
@@ -681,9 +681,9 @@ func newLinkBufferNode(size int) *linkBufferNode {
 		return node
 	}
 	if size < LinkBufferCap {
-		size = LinkBufferCap
+		size = LinkBufferCap  // 如果 size小于 4kb，还是按照 4kb 对齐
 	}
-	node.buf = malloc(0, size)
+	node.buf = malloc(0, size)  // 从 slab 内存池分配
 	return node
 }
 
@@ -695,22 +695,22 @@ var linkedPool = sync.Pool{
 	},
 }
 
-type linkBufferNode struct {
-	buf      []byte          // buffer
-	off      int             // read-offset
-	malloc   int             // write-offset
-	refer    int32           // reference count
-	readonly bool            // read-only node, introduced by Refer, WriteString, WriteBinary, etc., default false
+type linkBufferNode struct {  // 链表节点的格式 // 猜测是按照 ring buffer 来设计的
+	buf      []byte          // buffer  最少分配 4 kb, 通常是 8kb
+	off      int             // read-offset  // 指向上面 buffer 数组的结束位置  // 默认 0
+	malloc   int             // write-offset  // 默认  0
+	refer    int32           // reference count  // 默认  1
+	readonly bool            // read-only node, introduced by Refer, WriteString, WriteBinary, etc., default false  // 默认 false
 	origin   *linkBufferNode // the root node of the extends
 	next     *linkBufferNode // the next node of the linked buffer
 }
 
-func (node *linkBufferNode) Len() (l int) {
+func (node *linkBufferNode) Len() (l int) {  // buffer 中实际存储的数据长度
 	return len(node.buf) - node.off
 }
 
 func (node *linkBufferNode) IsEmpty() (ok bool) {
-	return node.off == len(node.buf)
+	return node.off == len(node.buf)  // ??? 为什么这么写，难道是环形缓冲区
 }
 
 func (node *linkBufferNode) Reset() {
@@ -734,8 +734,8 @@ func (node *linkBufferNode) Peek(n int) (p []byte) {
 
 func (node *linkBufferNode) Malloc(n int) (buf []byte) {
 	malloc := node.malloc
-	node.malloc += n
-	return node.buf[malloc:node.malloc]
+	node.malloc += n  // 第一次，这个值为  8kb
+	return node.buf[malloc:node.malloc]  // 把  malloc 得到的 8kb 取出来用
 }
 
 // Refer holds a reference count at the same time as Next, and releases the real buffer after Release.
@@ -820,17 +820,17 @@ func unsafeStringToSlice(s string) (b []byte) {
 }
 
 // mallocMax is 8MB
-const mallocMax = block8k * block1k
+const mallocMax = block8k * block1k  // 8mb
 
 // malloc limits the cap of the buffer from mcache.
-func malloc(size, capacity int) []byte {
+func malloc(size, capacity int) []byte {  // 从 slab 内存池分配
 	if capacity > mallocMax {
-		return make([]byte, size, capacity)
+		return make([]byte, size, capacity)  // 超过 8mb, 直接从 golang 的堆里面分配
 	}
-	return mcache.Malloc(size, capacity)
+	return mcache.Malloc(size, capacity)  // 从 slab 格式的内存池里分配
 }
 
-// free limits the cap of the buffer from mcache.
+// free limits the cap of the buffer from mcache.  // 放回 slab 内存池
 func free(buf []byte) {
 	if cap(buf) > mallocMax {
 		return

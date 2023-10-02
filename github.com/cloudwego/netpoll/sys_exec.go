@@ -55,11 +55,11 @@ func sysSocket(family, sotype, proto int) (int, error) {
 	return s, nil
 }
 
-const barriercap = 32
+const barriercap = 32  // 这个代表了 2 的  32 次方
 
-type barrier struct {
-	bs  [][]byte
-	ivs []syscall.Iovec
+type barrier struct {  // 在  linux poll 中使用的对象 // ??? 干什么的?
+	bs  [][]byte  // 可能是数据块的信息
+	ivs []syscall.Iovec  // 猜测是为了方便使用 readv 和  writev
 }
 
 // writev wraps the writev system call.
@@ -77,10 +77,10 @@ func writev(fd int, bs [][]byte, ivs []syscall.Iovec) (n int, err error) {
 	return int(r), nil
 }
 
-// readv wraps the readv system call.
+// readv wraps the readv system call.  // 对 linux 的 readv 的封装
 // return 0, nil means EOF.
 func readv(fd int, bs [][]byte, ivs []syscall.Iovec) (n int, err error) {
-	iovLen := iovecs(bs, ivs)
+	iovLen := iovecs(bs, ivs)  // 构造缓冲区
 	if iovLen == 0 {
 		return 0, nil
 	}
@@ -90,24 +90,24 @@ func readv(fd int, bs [][]byte, ivs []syscall.Iovec) (n int, err error) {
 	if e != 0 {
 		return int(r), syscall.Errno(e)
 	}
-	return int(r), nil
+	return int(r), nil  // r 是最终读取的字节数
 }
 
-// TODO: read from sysconf(_SC_IOV_MAX)? The Linux default is
+// TODO: read from sysconf(_SC_IOV_MAX)? The Linux default is  // 匹配每个 readv 的结构的缓冲区地址及其缓冲区长度，最后返回 readv 需要的结构的块数
 //  1024 and this seems conservative enough for now. Darwin's
 //  UIO_MAXIOV also seems to be 1024.
 // iovecs limit length to 2GB(2^31)
 func iovecs(bs [][]byte, ivs []syscall.Iovec) (iovLen int) {
 	totalLen := 0
-	for i := 0; i < len(bs); i++ {
+	for i := 0; i < len(bs); i++ {  // bs 长度应该是 31 
 		chunk := bs[i]
 		l := len(chunk)
 		if l == 0 {
-			continue
+			continue  // 这个块如果没分配内存，就忽略这个块
 		}
-		ivs[iovLen].Base = &chunk[0]
+		ivs[iovLen].Base = &chunk[0]  // 从第 0 块开始，把缓冲区的信息填写上去
 		totalLen += l
-		if totalLen < math.MaxInt32 {
+		if totalLen < math.MaxInt32 {  // 每次最多读取 2gb 的数据
 			ivs[iovLen].SetLen(l)
 			iovLen++
 		} else {
@@ -123,10 +123,10 @@ func iovecs(bs [][]byte, ivs []syscall.Iovec) (iovLen int) {
 
 func resetIovecs(bs [][]byte, ivs []syscall.Iovec) {
 	for i := 0; i < len(bs); i++ {
-		bs[i] = nil
+		bs[i] = nil  // 证明预先预留的缓冲区，已经交给了 readv 的结构去使用了
 	}
 	for i := 0; i < len(ivs); i++ {
-		ivs[i].Base = nil
+		ivs[i].Base = nil  // ??? 看不懂，为什么要这么做 这样的话，那一块内存就没有任何引用了
 	}
 }
 

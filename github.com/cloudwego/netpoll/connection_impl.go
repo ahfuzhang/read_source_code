@@ -32,8 +32,8 @@ const (
 type connection struct {
 	netFD // 客户端 fd 对象
 	onEvent
-	locker
-	operator        *FDOperator
+	locker          // 实现3 个状态锁
+	operator        *FDOperator  // poll.Alloc() 分配的对象 // ??? 不知道干啥的
 	readTimeout     time.Duration
 	readTimer       *time.Timer
 	readTrigger     chan error
@@ -41,13 +41,13 @@ type connection struct {
 	writeTimeout    time.Duration
 	writeTimer      *time.Timer
 	writeTrigger    chan error
-	inputBuffer     *LinkBuffer
-	outputBuffer    *LinkBuffer
+	inputBuffer     *LinkBuffer // 链表 buffer 对象  // 一开始是 8kb
+	outputBuffer    *LinkBuffer  // 一开始是  0  空间，并且只读
 	inputBarrier    *barrier
 	outputBarrier   *barrier
 	supportZeroCopy bool
-	maxSize         int // The maximum size of data between two Release().
-	bookSize        int // The size of data that can be read at once.
+	maxSize         int // The maximum size of data between two Release().  // 这两个值的初始值是 8kb
+	bookSize        int // The size of data that can be read at once.  // c.Inputs 中需要使用这个大小  初始值是 8kb
 }
 
 var (
@@ -322,7 +322,7 @@ func (c *connection) init(conn Conn, opts *options) (err error) {
 	c.readTrigger = make(chan error, 1)
 	c.writeTrigger = make(chan error, 1)
 	c.bookSize, c.maxSize = pagesize, pagesize
-	c.inputBuffer, c.outputBuffer = NewLinkBuffer(pagesize), NewLinkBuffer() // 链表 buffer
+	c.inputBuffer, c.outputBuffer = NewLinkBuffer(pagesize), NewLinkBuffer() // 链表 buffer  // NewLinkBuffer() 传入 0，相当于是只读节点
 	c.inputBarrier, c.outputBarrier = barrierPool.Get().(*barrier), barrierPool.Get().(*barrier)
 
 	c.initNetFD(conn)  // conn must be *netFD{}
@@ -338,10 +338,10 @@ func (c *connection) init(conn Conn, opts *options) (err error) {
 	// check zero-copy
 	if setZeroCopy(c.fd) == nil && setBlockZeroCopySend(c.fd, defaultZeroCopyTimeoutSec, 0) == nil {
 		c.supportZeroCopy = true
-	} // 牛叉啊，零拷贝也支持。这里是怎么支持零拷贝的呢?
+	} // 牛叉啊，零拷贝也支持。这里是怎么支持零拷贝的呢?  ???
 
 	// connection initialized and prepare options
-	return c.onPrepare(opts)  // 触发 prepare 事件
+	return c.onPrepare(opts) // 触发 prepare 事件
 }
 
 func (c *connection) initNetFD(conn Conn) {

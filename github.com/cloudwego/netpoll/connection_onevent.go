@@ -155,7 +155,7 @@ func (c *connection) onRequest() (needTrigger bool) {
 	processed := c.onProcess( // 从这里来看， onRequestCallback 是在一个协程里面被调用的
 		// only process when conn active and have unread data
 		func(c *connection) bool {
-			return c.Reader().Len() > 0
+			return c.Reader().Len() > 0 // 有数据的时候，才回调 onRequest
 		},
 		func(c *connection) {
 			_ = onRequest(c.ctx, c)
@@ -172,7 +172,7 @@ func (c *connection) onProcess(isProcessable func(c *connection) bool, process f
 		return false
 	}
 	// task already exists
-	if !c.lock(processing) {
+	if !c.lock(processing) { // 回调之前要加锁  // 原子操作，把一个 int32 置为 1
 		return false
 	}
 	// add new task
@@ -181,7 +181,7 @@ func (c *connection) onProcess(isProcessable func(c *connection) bool, process f
 		defer func() {
 			// cannot use recover() here, since we don't want to break the panic stack
 			if panicked {
-				c.unlock(processing)
+				c.unlock(processing) // 当发生 core dump 的时候，进行解锁的操作
 				if c.IsActive() {
 					c.Close()
 				} else {
@@ -193,7 +193,7 @@ func (c *connection) onProcess(isProcessable func(c *connection) bool, process f
 		// `process` must be executed at least once if `isProcessable` in order to cover the `send & close by peer` case.
 		// Then the loop processing must ensure that the connection `IsActive`.
 		if isProcessable(c) {
-			process(c)
+			process(c) // 有数据的时候，才回调  onRequest
 		}
 		// `process` must either eventually read all the input data or actively Close the connection,
 		// otherwise the goroutine will fall into a dead loop.
@@ -204,27 +204,27 @@ func (c *connection) onProcess(isProcessable func(c *connection) bool, process f
 			if closedBy == user || !isProcessable(c) {
 				break
 			}
-			process(c)
+			process(c) // 如果现在  epoll_wait 协程在工作，而且又产生了数据，那就再调用  onRequest
 		}
 		// Handling callback if connection has been closed.
-		if closedBy != none {
+		if closedBy != none { // closedBy = user 或  poller
 			//  if closed by user when processing, it "may" needs detach
 			needDetach := closedBy == user
 			// Here is a conor case that operator will be detached twice:
 			//   If server closed the connection(client OnHup will detach op first and closeBy=poller),
 			//   and then client's OnRequest function also closed the connection(closeBy=user).
 			// But operator already prevent that detach twice will not cause any problem
-			c.closeCallback(false, needDetach)
+			c.closeCallback(false, needDetach) // 看不懂 ???
 			panicked = false
 			return
 		}
 		c.unlock(processing)
 		// Double check when exiting.
-		if isProcessable(c) && c.lock(processing) {
+		if isProcessable(c) && c.lock(processing) { // 走到这里发现还有数据，再倒回去继续执行
 			goto START
 		}
 		// task exits
-		panicked = false
+		panicked = false // 如果这个  panic 标志没有被修改，说明程序发生了(用户的自定义函数)  panic
 		return
 	}
 

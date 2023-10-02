@@ -26,7 +26,7 @@ const EPOLLET = -syscall.EPOLLET
 
 type epollevent struct {
 	events uint32
-	data   [8]byte // unaligned uintptr
+	data   [8]byte // unaligned uintptr  // 保存一个指针  /* User data variable */  额外信息的指针，猜测一般是用不到的
 }
 
 // EpollCreate implements epoll_create1.   调用 epoll_create
@@ -48,7 +48,7 @@ func EpollCtl(epfd int, op int, fd int, event *epollevent) (err error) {
 	return err
 }
 
-// EpollWait implements epoll_wait.
+// EpollWait implements epoll_wait.  // msec 分为阻塞的情况和非阻塞的情况
 func EpollWait(epfd int, events []epollevent, msec int) (n int, err error) {
 	var r0 uintptr
 	var _p0 = unsafe.Pointer(&events[0])

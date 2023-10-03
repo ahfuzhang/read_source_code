@@ -26,7 +26,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/bytedance/gopkg/lang/mcache"  // 各个字节范围的内存池
+	"github.com/bytedance/gopkg/lang/mcache" // 各个字节范围的内存池
 )
 
 // BinaryInplaceThreshold marks the minimum value of the nocopy slice length,
@@ -34,37 +34,37 @@ import (
 const BinaryInplaceThreshold = block4k
 
 // LinkBufferCap that can be modified marks the minimum value of each node of LinkBuffer.
-var LinkBufferCap = block4k  // ??? 不懂，为什么块的大小要定义为变量  // 没有任何一个地方二次赋值
+var LinkBufferCap = block4k // ??? 不懂，为什么块的大小要定义为变量  // 没有任何一个地方二次赋值
 
 // NewLinkBuffer size defines the initial capacity, but there is no readable data.
-func NewLinkBuffer(size ...int) *LinkBuffer {  // 构造一个新的链表内存池, 通常 size 不填，或者 size=8kb
+func NewLinkBuffer(size ...int) *LinkBuffer { // 构造一个新的链表内存池, 通常 size 不填，或者 size=8kb
 	var buf = &LinkBuffer{}
 	var l int
 	if len(size) > 0 {
 		l = size[0]
 	}
-	var node = newLinkBufferNode(l)  // 申请一个链表节点
+	var node = newLinkBufferNode(l) // 申请一个链表节点
 	buf.head, buf.read, buf.flush, buf.write = node, node, node, node
 	return buf
 }
 
-// LinkBuffer implements ReadWriter.  // 应该是用链表来连接各个块，然后减少一整块的内存分配
+// LinkBuffer implements ReadWriter.  // 应该是用链表来连接各个块，然后减少一整块的大内存分配
 type LinkBuffer struct {
 	length     int64
 	mallocSize int
 
 	head  *linkBufferNode // release head  // 初始化的时候，只初始化了这四个字段
-	read  *linkBufferNode // read head
-	flush *linkBufferNode // malloc head
+	read  *linkBufferNode // read head  // read 一开始指向链表第一个节点
+	flush *linkBufferNode // malloc head  // bookAck 后,  flush 指向了  write
 	write *linkBufferNode // malloc tail  // 在  book 方法中，分配 8kb
 
 	caches [][]byte // buf allocated by Next when cross-package, which should be freed when release
-}
+} // caches 当不得不从  slab 分配空间时，把分配的空间的信息记录在这里
 
 var _ Reader = &LinkBuffer{}
 var _ Writer = &LinkBuffer{}
 
-// Len implements Reader.
+// Len implements Reader.  // 读取总长度
 func (b *LinkBuffer) Len() int {
 	l := atomic.LoadInt64(&b.length)
 	return int(l)
@@ -78,7 +78,7 @@ func (b *LinkBuffer) IsEmpty() (ok bool) {
 // ------------------------------------------ implement zero-copy reader ------------------------------------------
 
 // Next implements Reader.
-func (b *LinkBuffer) Next(n int) (p []byte, err error) {
+func (b *LinkBuffer) Next(n int) (p []byte, err error) { // 猜测是内部记录了一个指针
 	if n <= 0 {
 		return
 	}
@@ -86,11 +86,11 @@ func (b *LinkBuffer) Next(n int) (p []byte, err error) {
 	if b.Len() < n {
 		return p, fmt.Errorf("link buffer next[%d] not enough", n)
 	}
-	b.recalLen(-n) // re-cal length
+	b.recalLen(-n) // re-cal length  // 这里很关键：这里是消费式的读取，读取 n 字节，就会导致总长度少了 n 字节
 
 	// single node
 	if b.isSingleNode(n) {
-		return b.read.Next(n), nil
+		return b.read.Next(n), nil // 消费式的从单个链表节点消费 n 字节
 	}
 	// multiple nodes
 	var pIdx int
@@ -127,27 +127,27 @@ func (b *LinkBuffer) Peek(n int) (p []byte, err error) {
 	}
 	// single node
 	if b.isSingleNode(n) {
-		return b.read.Peek(n), nil
-	}
+		return b.read.Peek(n), nil // 如果是单节点，调用链表节点的  Peek 方法
+	} // b.read.Peek(n) 返回  node buf 内的一段区域的 []byte
 	// multiple nodes
 	var pIdx int
-	if block1k < n && n <= mallocMax {
+	if block1k < n && n <= mallocMax { // 当数据在  1kb ~ 8mb 之间时，通过  slab 分配这块内存空间
 		p = malloc(n, n)
 		b.caches = append(b.caches, p)
 	} else {
-		p = make([]byte, n)
+		p = make([]byte, n) // 不在上面的范围，直接在堆上分配
 	}
 	var node = b.read
 	var l int
-	for ack := n; ack > 0; ack = ack - l {
+	for ack := n; ack > 0; ack = ack - l { // ??? 倒底什么时候才会产生拷贝呢?
 		l = node.Len()
 		if l >= ack {
-			pIdx += copy(p[pIdx:], node.Peek(ack))
+			pIdx += copy(p[pIdx:], node.Peek(ack)) // 当数据超过单节点大小的时候，必然发生拷贝
 			break
 		} else if l > 0 {
 			pIdx += copy(p[pIdx:], node.Peek(l))
 		}
-		node = node.next
+		node = node.next // 指向下一个链表节点
 	}
 	_ = pIdx
 	return p, nil
@@ -257,7 +257,7 @@ func (b *LinkBuffer) ReadByte() (p byte, err error) {
 		if b.read.Len() >= 1 {
 			return b.read.Next(1)[0], nil
 		}
-		b.read = b.read.next
+		b.read = b.read.next // 看起来像是遍历链表
 	}
 }
 
@@ -274,7 +274,7 @@ func (b *LinkBuffer) Until(delim byte) (line []byte, err error) {
 // and only holds the ability of Reader.
 //
 // Slice will automatically execute a Release.
-func (b *LinkBuffer) Slice(n int) (r Reader, err error) {
+func (b *LinkBuffer) Slice(n int) (r Reader, err error) {  // 返回一个可以流式读取的 reader 对象
 	if n <= 0 {
 		return NewLinkBuffer(0), nil
 	}
@@ -282,7 +282,7 @@ func (b *LinkBuffer) Slice(n int) (r Reader, err error) {
 	if b.Len() < n {
 		return r, fmt.Errorf("link buffer readv[%d] not enough", n)
 	}
-	b.recalLen(-n) // re-cal length
+	b.recalLen(-n) // re-cal length  // 消费 n 个字节
 
 	// just use for range
 	p := &LinkBuffer{
@@ -577,9 +577,10 @@ func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {
 //
 // bookSize: The size of data that can be read at once.
 // maxSize: The maximum size of data between two Release(). In some cases, this can
-//    bookSize, maxSize 初始值为 8kb
-//	guarantee all data allocated in one node to reduce copy.
-func (b *LinkBuffer) book(bookSize, maxSize int) (p []byte) {  // c.inputBuffer 一开始是  8kb  空间  // bookSize, maxSize int 一开始 8kb
+//
+//	   bookSize, maxSize 初始值为 8kb
+//		guarantee all data allocated in one node to reduce copy.
+func (b *LinkBuffer) book(bookSize, maxSize int) (p []byte) { // c.inputBuffer 一开始是  8kb  空间  // bookSize, maxSize int 一开始 8kb
 	l := cap(b.write.buf) - b.write.malloc // l = 8kb
 	// grow linkBuffer
 	if l == 0 {
@@ -590,20 +591,20 @@ func (b *LinkBuffer) book(bookSize, maxSize int) (p []byte) {  // c.inputBuffer 
 	if l > bookSize {
 		l = bookSize
 	}
-	return b.write.Malloc(l)  // 猜测第一次分配了 8kb 缓冲区  // 第一次， 在 inputBuffer 的  write 上再分配 8kb
-}   // b.write.Malloc(l) 把 newLinkBufferNode() 中分配的 8kb 拿出来用
+	return b.write.Malloc(l) // 猜测第一次分配了 8kb 缓冲区  // 第一次， 在 inputBuffer 的  write 上再分配 8kb  // 这里返回了长度为 8kb 的数组
+} // b.write.Malloc(l) 把 newLinkBufferNode() 中分配的 8kb 拿出来用
 
 // bookAck will ack the first n malloc bytes and discard the rest.
 //
 // length: The size of data in inputBuffer. It is used to calculate the maxSize
-func (b *LinkBuffer) bookAck(n int) (length int, err error) {  // n 是  readv 实际读出的字节数  // book() 是订阅空间， bookAck 是对订阅空间的回应。
-	b.write.malloc = n + len(b.write.buf)  // n + 8kb ??? 啥意思
-	b.write.buf = b.write.buf[:b.write.malloc]  // 这样不是越界了吗?
+func (b *LinkBuffer) bookAck(n int) (length int, err error) { // n 是  readv 实际读出的字节数  // book() 是订阅空间， bookAck 是对订阅空间的回应。
+	b.write.malloc = n + len(b.write.buf)      // len(b.write.buf) = 0
+	b.write.buf = b.write.buf[:b.write.malloc] // buf 长度从 0  变成了  n
 	b.flush = b.write
 
 	// re-cal length
-	length = b.recalLen(n)  // 累加总长度
-	return length, nil
+	length = b.recalLen(n) // 累加总长度， 使用原子加  length += n
+	return length, nil     // 返回数据的总长度
 }
 
 // calcMaxSize will calculate the data size between two Release()
@@ -664,7 +665,7 @@ func (b *LinkBuffer) resetTail(maxSize int) {
 }
 
 // recalLen re-calculate the length
-func (b *LinkBuffer) recalLen(delta int) (length int) {  // 累加总长度
+func (b *LinkBuffer) recalLen(delta int) (length int) { // 累加总长度
 	return int(atomic.AddInt64(&b.length, int64(delta)))
 }
 
@@ -672,8 +673,8 @@ func (b *LinkBuffer) recalLen(delta int) (length int) {  // 累加总长度
 
 // newLinkBufferNode create or reuse linkBufferNode.
 // Nodes with size <= 0 are marked as readonly, which means the node.buf is not allocated by this mcache.
-func newLinkBufferNode(size int) *linkBufferNode {  // size 通常为 0，或者为  8kb
-	var node = linkedPool.Get().(*linkBufferNode)  // 从内存池取一个节点
+func newLinkBufferNode(size int) *linkBufferNode { // size 通常为 0，或者为  8kb
+	var node = linkedPool.Get().(*linkBufferNode) // 从内存池取一个节点
 	// reset node offset
 	node.off, node.malloc, node.refer, node.readonly = 0, 0, 1, false
 	if size <= 0 {
@@ -681,9 +682,9 @@ func newLinkBufferNode(size int) *linkBufferNode {  // size 通常为 0，或者
 		return node
 	}
 	if size < LinkBufferCap {
-		size = LinkBufferCap  // 如果 size小于 4kb，还是按照 4kb 对齐
+		size = LinkBufferCap // 如果 size小于 4kb，还是按照 4kb 对齐
 	}
-	node.buf = malloc(0, size)  // 从 slab 内存池分配
+	node.buf = malloc(0, size) // 从 slab 内存池分配  // 长度为 0, cap 为  8kb
 	return node
 }
 
@@ -695,9 +696,9 @@ var linkedPool = sync.Pool{
 	},
 }
 
-type linkBufferNode struct {  // 链表节点的格式 // 猜测是按照 ring buffer 来设计的
+type linkBufferNode struct { // 链表节点的格式 // 猜测是按照 ring buffer 来设计的
 	buf      []byte          // buffer  最少分配 4 kb, 通常是 8kb
-	off      int             // read-offset  // 指向上面 buffer 数组的结束位置  // 默认 0
+	off      int             // read-offset  // 指向上面 buffer 数组的结束位置  // 默认 0  // 在有数据的时候，这个字段指向数据的开始位置
 	malloc   int             // write-offset  // 默认  0
 	refer    int32           // reference count  // 默认  1
 	readonly bool            // read-only node, introduced by Refer, WriteString, WriteBinary, etc., default false  // 默认 false
@@ -705,12 +706,12 @@ type linkBufferNode struct {  // 链表节点的格式 // 猜测是按照 ring b
 	next     *linkBufferNode // the next node of the linked buffer
 }
 
-func (node *linkBufferNode) Len() (l int) {  // buffer 中实际存储的数据长度
-	return len(node.buf) - node.off
+func (node *linkBufferNode) Len() (l int) { // buffer 中实际存储的数据长度
+	return len(node.buf) - node.off // ??? 不懂为什么要这样计算单个链表节点内的数据长度
 }
 
 func (node *linkBufferNode) IsEmpty() (ok bool) {
-	return node.off == len(node.buf)  // ??? 为什么这么写，难道是环形缓冲区
+	return node.off == len(node.buf) // ??? 为什么这么写，难道是环形缓冲区
 }
 
 func (node *linkBufferNode) Reset() {
@@ -724,23 +725,23 @@ func (node *linkBufferNode) Reset() {
 
 func (node *linkBufferNode) Next(n int) (p []byte) {
 	off := node.off
-	node.off += n
+	node.off += n // 消费式的读取，数据开始的指针向前偏移  n 字节
 	return node.buf[off:node.off]
 }
 
-func (node *linkBufferNode) Peek(n int) (p []byte) {
+func (node *linkBufferNode) Peek(n int) (p []byte) { // 返回 buf 内有效的区域内的  n 字节
 	return node.buf[node.off : node.off+n]
 }
 
 func (node *linkBufferNode) Malloc(n int) (buf []byte) {
 	malloc := node.malloc
-	node.malloc += n  // 第一次，这个值为  8kb
-	return node.buf[malloc:node.malloc]  // 把  malloc 得到的 8kb 取出来用
+	node.malloc += n                    // 第一次，这个值为  8kb
+	return node.buf[malloc:node.malloc] // 把  malloc 得到的 8kb 取出来用
 }
 
 // Refer holds a reference count at the same time as Next, and releases the real buffer after Release.
 // The node obtained by Refer is read-only.
-func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) {
+func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) {  // 猜测是增加链表节点的引用计数
 	p = newLinkBufferNode(0)
 	p.buf = node.Next(n)
 
@@ -796,9 +797,9 @@ func (b *LinkBuffer) isSingleNode(readN int) (single bool) {
 	if readN <= 0 {
 		return true
 	}
-	l := b.read.Len()
+	l := b.read.Len() // b.read 一开始指向链表的第一个节点
 	for l == 0 && b.read != b.flush {
-		b.read = b.read.next
+		b.read = b.read.next // ??? 不明白这个循环体的作用是什么
 		l = b.read.Len()
 	}
 	return l >= readN
@@ -820,14 +821,14 @@ func unsafeStringToSlice(s string) (b []byte) {
 }
 
 // mallocMax is 8MB
-const mallocMax = block8k * block1k  // 8mb
+const mallocMax = block8k * block1k // 8mb
 
 // malloc limits the cap of the buffer from mcache.
-func malloc(size, capacity int) []byte {  // 从 slab 内存池分配
+func malloc(size, capacity int) []byte { // 从 slab 内存池分配
 	if capacity > mallocMax {
-		return make([]byte, size, capacity)  // 超过 8mb, 直接从 golang 的堆里面分配
+		return make([]byte, size, capacity) // 超过 8mb, 直接从 golang 的堆里面分配
 	}
-	return mcache.Malloc(size, capacity)  // 从 slab 格式的内存池里分配
+	return mcache.Malloc(size, capacity) // 从 slab 格式的内存池里分配
 }
 
 // free limits the cap of the buffer from mcache.  // 放回 slab 内存池

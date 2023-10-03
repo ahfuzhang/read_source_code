@@ -32,21 +32,21 @@ const (
 type connection struct {
 	netFD // 客户端 fd 对象
 	onEvent
-	locker          // 实现3 个状态锁
-	operator        *FDOperator  // poll.Alloc() 分配的对象 // ??? 不知道干啥的
-	readTimeout     time.Duration
+	locker                        // 实现3 个状态锁
+	operator        *FDOperator   // poll.Alloc() 分配的对象 // ??? 不知道干啥的
+	readTimeout     time.Duration // 读超时的时间
 	readTimer       *time.Timer
-	readTrigger     chan error
-	waitReadSize    int64
+	readTrigger     chan error // 达到期望长度后，把一个信息写到这个  channel
+	waitReadSize    int64      // 这个字段让用户设置真正期望的长度  // func (c *connection) waitRead(n int) 中使用原子操作赋值
 	writeTimeout    time.Duration
 	writeTimer      *time.Timer
 	writeTrigger    chan error
 	inputBuffer     *LinkBuffer // 链表 buffer 对象  // 一开始是 8kb
-	outputBuffer    *LinkBuffer  // 一开始是  0  空间，并且只读
+	outputBuffer    *LinkBuffer // 一开始是  0  空间，并且只读
 	inputBarrier    *barrier
 	outputBarrier   *barrier
 	supportZeroCopy bool
-	maxSize         int // The maximum size of data between two Release().  // 这两个值的初始值是 8kb
+	maxSize         int // The maximum size of data between two Release().  // 这两个值的初始值是 8kb, 如果数据的最大长度比这个还大，maxSize = length
 	bookSize        int // The size of data that can be read at once.  // c.Inputs 中需要使用这个大小  初始值是 8kb
 }
 
@@ -105,12 +105,12 @@ func (c *connection) Next(n int) (p []byte, err error) {
 	return c.inputBuffer.Next(n)
 }
 
-// Peek implements Connection.
+// Peek implements Connection.  // 用户使用的 api, 检查 n 个字节. 一般在  onRequest 中使用  // Peek 是指从头开始读吗?
 func (c *connection) Peek(n int) (buf []byte, err error) {
-	if err = c.waitRead(n); err != nil {
+	if err = c.waitRead(n); err != nil { // c.waitRead(n) 会阻塞，直到数据到达，或者出错
 		return buf, err
 	}
-	return c.inputBuffer.Peek(n)
+	return c.inputBuffer.Peek(n) // 处理链表的逻辑，返回最终需要的数据
 }
 
 // Skip implements Connection.
@@ -144,7 +144,7 @@ func (c *connection) Release() (err error) {
 	return c.inputBuffer.Release()
 }
 
-// Slice implements Connection.
+// Slice implements Connection.  // 返回一个 reader 对象，便于流式读取数据
 func (c *connection) Slice(n int) (r Reader, err error) {
 	if err = c.waitRead(n); err != nil {
 		return nil, err
@@ -288,7 +288,7 @@ func (c *connection) Write(p []byte) (n int, err error) {
 	defer c.unlock(flushing)
 
 	dst, _ := c.outputBuffer.Malloc(len(p))
-	n = copy(dst, p)
+	n = copy(dst, p) // 发送数据必然导致一次拷贝
 	c.outputBuffer.Flush()
 	err = c.flush()
 	return n, err
@@ -307,7 +307,7 @@ func (c *connection) Detach() error {
 
 // ------------------------------------------ private ------------------------------------------
 
-var barrierPool = sync.Pool{
+var barrierPool = sync.Pool{ // 用于  readv / writev 的内存池
 	New: func() interface{} {
 		return &barrier{
 			bs:  make([][]byte, barriercap),
@@ -378,9 +378,9 @@ func (c *connection) initFinalizer() { // 客户端连接对象本身的初始�
 	})
 }
 
-func (c *connection) triggerRead(err error) {
+func (c *connection) triggerRead(err error) { // 达到期待的长度后，再次触发
 	select {
-	case c.readTrigger <- err:
+	case c.readTrigger <- err: // 把一个信息写到管道
 	default:
 	}
 }
@@ -392,27 +392,27 @@ func (c *connection) triggerWrite(err error) {
 	}
 }
 
-// waitRead will wait full n bytes.
-func (c *connection) waitRead(n int) (err error) {
+// waitRead will wait full n bytes.  // 由用户发起的  Peek(n) 中开始调用
+func (c *connection) waitRead(n int) (err error) { // 这个函数会阻塞
 	if n <= c.inputBuffer.Len() {
-		return nil
+		return nil // 如果已经接收的数据，大于等于期望的数据，就不必再等了
 	}
 	atomic.StoreInt64(&c.waitReadSize, int64(n))
 	defer atomic.StoreInt64(&c.waitReadSize, 0)
 	if c.readTimeout > 0 {
-		return c.waitReadWithTimeout(n)
+		return c.waitReadWithTimeout(n) // 如果有超时时间，就进行超时等待
 	}
 	// wait full n
-	for c.inputBuffer.Len() < n {
-		switch c.status(closing) {
+	for c.inputBuffer.Len() < n { // 阻塞住当前  gopool 中的协程，直到需要的数据到达为止
+		switch c.status(closing) { // 这个锁有三个状态 none, user, poller
 		case poller:
 			return Exception(ErrEOF, "wait read")
 		case user:
 			return Exception(ErrConnClosed, "wait read")
 		default:
-			err = <-c.readTrigger
-			if err != nil {
-				return err
+			err = <-c.readTrigger // 达到期望长度后触发。 readTrigger 是  epoll_wait 协程与用户 onRequest 协程通讯的手段。
+			if err != nil {       // 当 epoll_wait 协程的读事件发生后，会在这个管道里写一条消息
+				return err // ??? 如果一直不消费这个  channel 的消息，会怎么样?
 			}
 		}
 	}
@@ -446,7 +446,7 @@ func (c *connection) waitReadWithTimeout(n int) (err error) {
 					return nil
 				}
 				return Exception(ErrReadTimeout, c.remoteAddr.String())
-			case err = <-c.readTrigger:
+			case err = <-c.readTrigger: // 达到期望长度后触发
 				if err != nil {
 					return err
 				}

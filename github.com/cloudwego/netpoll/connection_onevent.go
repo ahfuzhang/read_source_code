@@ -63,7 +63,7 @@ func (c *connection) SetOnConnect(onConnect OnConnect) error {
 	return nil
 }
 
-// SetOnRequest initialize ctx when setting OnRequest.
+// SetOnRequest initialize ctx when setting OnRequest.  // 用户设定的回调函数
 func (c *connection) SetOnRequest(onRequest OnRequest) error {
 	if onRequest == nil {
 		return nil
@@ -95,7 +95,7 @@ func (c *connection) AddCloseCallback(callback CloseCallback) error {
 func (c *connection) onPrepare(opts *options) (err error) { // opts 是从哪里开始传进来的 ???
 	if opts != nil {
 		c.SetOnConnect(opts.onConnect) // 设置当前客户端连接对象上的各种回调
-		c.SetOnRequest(opts.onRequest)
+		c.SetOnRequest(opts.onRequest)    // 最重要的回调：用户提供的回调函数
 		c.SetReadTimeout(opts.readTimeout)
 		c.SetWriteTimeout(opts.writeTimeout)
 		c.SetIdleTimeout(opts.idleTimeout)

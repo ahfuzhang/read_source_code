@@ -102,16 +102,16 @@ func (c *connection) inputAck(n int) (err error) { // inputAck 意思是对  inp
 		c.maxSize = length
 	}
 	if c.maxSize > mallocMax {
-		c.maxSize = mallocMax
+		c.maxSize = mallocMax // 最大长度不超过 8mb
 	}
 
 	var needTrigger = true
 	if length == n { // first start onRequest
 		needTrigger = c.onRequest() // 原来 on request 是这里触发的  // 只要有数据，就会触发一次 onRequest
-	}
+	} // 猜测: c.onRequest() 只会被触发一次. 退出这个函数，意味着连接可以关闭了
 	if needTrigger && length >= int(atomic.LoadInt64(&c.waitReadSize)) {
 		c.triggerRead(nil) // 等到期待的长度达到后，再次进行触发
-	}
+	} // 放一个值在 c.readTrigger 这个  channel
 	return nil
 }
 

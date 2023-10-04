@@ -51,7 +51,7 @@ type FDOperator struct {
 	index int32 // index in operatorCache
 }
 
-func (op *FDOperator) Control(event PollEvent) error {  // 从事件循环调用进来，猜测应该会在这里卡住
+func (op *FDOperator) Control(event PollEvent) error {  // 从事件循环调用进来
 	if event == PollDetach && atomic.AddInt32(&op.detached, 1) > 1 {
 		return nil
 	}

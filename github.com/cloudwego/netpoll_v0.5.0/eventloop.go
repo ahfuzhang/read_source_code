@@ -81,7 +81,7 @@ type OnConnect func(ctx context.Context, connection Connection) context.Context
 // The underlying logic is similar to:
 //
 //	go func() {
-//		for !connection.Reader().IsEmpty() {
+//		for !connection.Reader().IsEmpty() {  // 只要有数据就会不断触发 onRequest
 //			OnRequest(ctx, connection)
 //		}
 //	}()
@@ -92,3 +92,4 @@ type OnConnect func(ctx context.Context, connection Connection) context.Context
 //
 // Return: error is unused which will be ignored directly.
 type OnRequest func(ctx context.Context, connection Connection) error
+// onRequest 返回的 error 代表什么?

@@ -158,7 +158,7 @@ func (c *connection) onRequest() (needTrigger bool) {
 			return c.Reader().Len() > 0 // 有数据的时候，才回调 onRequest
 		},
 		func(c *connection) {
-			_ = onRequest(c.ctx, c)
+			_ = onRequest(c.ctx, c)  // todo: error 完全忽略了，这个不对。发生 error 的时候应该关闭连接
 		},
 	)
 	// if not processed, should trigger read
@@ -171,7 +171,7 @@ func (c *connection) onProcess(isProcessable func(c *connection) bool, process f
 	if process == nil {
 		return false
 	}
-	// task already exists
+	// task already exists  // 保证了同一时间只会有一个onRequest回调
 	if !c.lock(processing) { // 回调之前要加锁  // 原子操作，把一个 int32 置为 1
 		return false
 	}

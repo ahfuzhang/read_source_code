@@ -22,13 +22,13 @@ import (
 //
 // For ease of use, it is recommended to implement Reader as a blocking interface,
 // rather than simply fetching the buffer.
-// For example, the return of calling Next(n) should be blocked if there are fewer than n bytes, unless timeout.
+// For example, the return of calling Next(n) should be blocked if there are fewer than n bytes, unless timeout.  // 这句注释很重要——会阻塞
 // The return value is guaranteed to meet the requirements or an error will be returned.
 type Reader interface {
 	// Next returns a slice containing the next n bytes from the buffer,
 	// advancing the buffer as if the bytes had been returned by Read.
 	//
-	// If there are fewer than n bytes in the buffer, Next returns will be blocked
+	// If there are fewer than n bytes in the buffer, Next returns will be blocked  // 注意：会阻塞
 	// until data enough or an error occurs (such as a wait timeout).
 	//
 	// The slice p is only valid until the next call to the Release method.
@@ -121,7 +121,7 @@ type Writer interface {
 	//
 	// The slice p is only valid until the next submit(e.g. Flush).
 	// Therefore, please make sure that all data has been written into the slice before submission.
-	Malloc(n int) (buf []byte, err error)
+	Malloc(n int) (buf []byte, err error)  // 从链表数据快分配空间
 
 	// WriteString is a faster implementation of Malloc when a string needs to be written.
 	// It replaces:
@@ -166,7 +166,7 @@ type Writer interface {
 	//  WriteDirect(b, nB)
 	//
 	// where buf[:nA] = bufA, buf[nA:nA+nB] = bufB.
-	WriteDirect(p []byte, remainCap int) error
+	WriteDirect(p []byte, remainCap int) error  // 猜测是预留一个头信息，然后在缓冲区的后面部分写入数据
 
 	// MallocAck will keep the first n malloc bytes and discard the rest.
 	// The following behavior:
@@ -182,11 +182,11 @@ type Writer interface {
 
 	// Append the argument writer to the tail of this writer and set the argument writer to nil,
 	// the operation is zero-copy, similar to p = append(p, w.p).
-	Append(w Writer) (err error)
+	Append(w Writer) (err error)  // ??? 看不懂  // 猜测是把另一个链表，加到这个链表的后面
 
 	// Flush will submit all malloc data and must confirm that the allocated bytes have been correctly assigned.
 	// Its behavior is equivalent to the io.Writer hat already has parameters(slice b).
-	Flush() (err error)
+	Flush() (err error)  // 触发  sendmsg 的系统调用
 
 	// MallocLen returns the total length of the writable data that has not yet been submitted in the writer.
 	MallocLen() (length int)
@@ -204,7 +204,7 @@ func NewReader(r io.Reader) Reader {
 }
 
 // NewWriter convert io.Writer to nocopy Writer
-func NewWriter(w io.Writer) Writer {
+func NewWriter(w io.Writer) Writer {  // 这个感觉很有用，能够把常见的 golang 的  writer 与  nocopywriter 整合起来。但是猜测内部必然发生很多数据拷贝。
 	return newZCWriter(w)
 }
 

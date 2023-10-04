@@ -50,13 +50,13 @@ func NewLinkBuffer(size ...int) *LinkBuffer { // 构造一个新的链表内存�
 
 // LinkBuffer implements ReadWriter.  // 应该是用链表来连接各个块，然后减少一整块的大内存分配
 type LinkBuffer struct {
-	length     int64
+	length     int64 // 代表 buffer 中数据的总长度。通过原子加减来保护
 	mallocSize int
 
 	head  *linkBufferNode // release head  // 初始化的时候，只初始化了这四个字段
 	read  *linkBufferNode // read head  // read 一开始指向链表第一个节点
-	flush *linkBufferNode // malloc head  // bookAck 后,  flush 指向了  write
-	write *linkBufferNode // malloc tail  // 在  book 方法中，分配 8kb
+	flush *linkBufferNode // malloc head  // bookAck 后,  flush 指向了  write  // ??? 这个用来干嘛的呢
+	write *linkBufferNode // malloc tail  // 在  book 方法中，分配 8kb  // ??? 为什么 write 一开始和  read 指向一起???  // 猜测是作者想在一个类里面兼容读和写两种场景，且读和写又不会在一个对象里面同时使用。
 
 	caches [][]byte // buf allocated by Next when cross-package, which should be freed when release
 } // caches 当不得不从  slab 分配空间时，把分配的空间的信息记录在这里
@@ -78,7 +78,7 @@ func (b *LinkBuffer) IsEmpty() (ok bool) {
 // ------------------------------------------ implement zero-copy reader ------------------------------------------
 
 // Next implements Reader.
-func (b *LinkBuffer) Next(n int) (p []byte, err error) { // 猜测是内部记录了一个指针
+func (b *LinkBuffer) Next(n int) (p []byte, err error) { // 消费 N 个字节
 	if n <= 0 {
 		return
 	}
@@ -94,22 +94,22 @@ func (b *LinkBuffer) Next(n int) (p []byte, err error) { // 猜测是内部记�
 	}
 	// multiple nodes
 	var pIdx int
-	if block1k < n && n <= mallocMax {
-		p = malloc(n, n)
-		b.caches = append(b.caches, p)
+	if block1k < n && n <= mallocMax { // 数据在  1kb 和  8mb 之间
+		p = malloc(n, n)               // 从  slab 内存池分配空间
+		b.caches = append(b.caches, p) // 把分配空间的地址记下来，等到  Release 的时候释放
 	} else {
-		p = make([]byte, n)
+		p = make([]byte, n) // 小于 1 kb, 或者大于  8mb， 直接从堆上分配
 	}
 	var l int
-	for ack := n; ack > 0; ack = ack - l {
-		l = b.read.Len()
+	for ack := n; ack > 0; ack = ack - l { // 在链表上逐块读取，把数据一次次拷贝到新的缓冲区上
+		l = b.read.Len() // 注意：当数据不在单个块上的时候，必然发生数据拷贝
 		if l >= ack {
-			pIdx += copy(p[pIdx:], b.read.Next(ack))
+			pIdx += copy(p[pIdx:], b.read.Next(ack)) // b.read.Next(ack) 读链表节点上的 Next() 方法
 			break
 		} else if l > 0 {
-			pIdx += copy(p[pIdx:], b.read.Next(l))
+			pIdx += copy(p[pIdx:], b.read.Next(l)) // 在链表节点上消费 l 字节。l 正好等于链表节点数据长度的话，消费后这个节点的数据长度为 0
 		}
-		b.read = b.read.next
+		b.read = b.read.next // 读指针继续往后移动
 	}
 	_ = pIdx
 	return p, nil
@@ -117,7 +117,7 @@ func (b *LinkBuffer) Next(n int) (p []byte, err error) { // 猜测是内部记�
 
 // Peek does not have an independent lifecycle, and there is no signal to
 // indicate that Peek content can be released, so Peek will not introduce mcache for now.
-func (b *LinkBuffer) Peek(n int) (p []byte, err error) {
+func (b *LinkBuffer) Peek(n int) (p []byte, err error) { // 从已有的数据中读出 n 字节，但是并不消费，不修改读指针的位置。
 	if n <= 0 {
 		return
 	}
@@ -137,9 +137,9 @@ func (b *LinkBuffer) Peek(n int) (p []byte, err error) {
 	} else {
 		p = make([]byte, n) // 不在上面的范围，直接在堆上分配
 	}
-	var node = b.read
+	var node = b.read // 指针建立了一个副本。
 	var l int
-	for ack := n; ack > 0; ack = ack - l { // ??? 倒底什么时候才会产生拷贝呢?
+	for ack := n; ack > 0; ack = ack - l { //这里的逻辑与  Next() 完全一样
 		l = node.Len()
 		if l >= ack {
 			pIdx += copy(p[pIdx:], node.Peek(ack)) // 当数据超过单节点大小的时候，必然发生拷贝
@@ -154,8 +154,8 @@ func (b *LinkBuffer) Peek(n int) (p []byte, err error) {
 }
 
 // Skip implements Reader.
-func (b *LinkBuffer) Skip(n int) (err error) {  // 跳过 n 字节。 在 outputBuffer 中记录已经发送过的数据
-	if n <= 0 {
+func (b *LinkBuffer) Skip(n int) (err error) { // 跳过 n 字节。 在 outputBuffer 中记录已经发送过的数据
+	if n <= 0 { // 相当于消费 n 字节，但是消费的数据并不返回
 		return
 	}
 	// check whether enough or not.
@@ -177,18 +177,18 @@ func (b *LinkBuffer) Skip(n int) (err error) {  // 跳过 n 字节。 在 output
 }
 
 // Release the node that has been read.  // 对应着  reader.Release()
-// b.flush == nil indicates that this LinkBuffer is created by LinkBuffer.Slice
+// b.flush == nil indicates that this LinkBuffer is created by LinkBuffer.Slice  // 用户层一定要记得调用这个  Release()
 func (b *LinkBuffer) Release() (err error) {
-	for b.read != b.flush && b.read.Len() == 0 {
-		b.read = b.read.next // ??? 指向下一个有数据的块 ???
+	for b.read != b.flush && b.read.Len() == 0 { // 读块与写块不重合，且读块的数据长度为 0
+		b.read = b.read.next //  读指针往后移动
 	}
-	for b.head != b.read {
-		node := b.head
+	for b.head != b.read { // 从链表头到链表的读块，并和重合
+		node := b.head // 因此从链表头到读块之前的块都应该回收
 		b.head = b.head.next
-		node.Release()
+		node.Release() // 调用链表节点的释放方法
 	}
-	for i := range b.caches {
-		free(b.caches[i])
+	for i := range b.caches {  // 当数据跨越两个链表节点的时候，需要申请新的缓冲区用于拷贝
+		free(b.caches[i])  // 这里把这些缓冲区释放掉
 		b.caches[i] = nil
 	}
 	b.caches = b.caches[:0]
@@ -262,12 +262,12 @@ func (b *LinkBuffer) ReadByte() (p byte, err error) { // 消费式的读取
 }
 
 // Until returns a slice ends with the delim in the buffer.
-func (b *LinkBuffer) Until(delim byte) (line []byte, err error) {
-	n := b.indexByte(delim, 0)
+func (b *LinkBuffer) Until(delim byte) (line []byte, err error) {  // 查找一个字符，返回从开始到包含这个字符的这部分字节
+	n := b.indexByte(delim, 0)  // 在所有已经 readv 得到的数据里查找一个字符
 	if n < 0 {
 		return nil, fmt.Errorf("link buffer read slice cannot find: '%b'", delim)
 	}
-	return b.Next(n + 1)
+	return b.Next(n + 1)  // 查找到以后，消费这些数据
 }
 
 // Slice returns a new LinkBuffer, which is a zero-copy slice of this LinkBuffer,
@@ -296,7 +296,7 @@ func (b *LinkBuffer) Slice(n int) (r Reader, err error) { // 返回一个可以�
 
 	// single node
 	if b.isSingleNode(n) { // 猜测是用引用计数的模式来共享链表节点
-		node := b.read.Refer(n)
+		node := b.read.Refer(n) // Refer 相当于把 n 个字节，置换到另一个链表中去
 		p.head, p.read, p.flush = node, node, node
 		return p, nil
 	}
@@ -309,7 +309,7 @@ func (b *LinkBuffer) Slice(n int) (r Reader, err error) { // 返回一个可以�
 	for ack := n - l; ack > 0; ack = ack - l {
 		l = b.read.Len()
 		if l >= ack {
-			p.flush.next = b.read.Refer(ack)
+			p.flush.next = b.read.Refer(ack)  // 当需要以  reader 的方式来消费这些数据的时候，把这些数据转移到另一个链表上
 			p.flush = p.flush.next
 			break
 		} else if l > 0 {
@@ -318,13 +318,13 @@ func (b *LinkBuffer) Slice(n int) (r Reader, err error) { // 返回一个可以�
 		}
 		b.read = b.read.next
 	}
-	return p, b.Release()
+	return p, b.Release()  // reader 方式可能要消耗很多数据，所以做一波 Release 操作
 }
 
 // ------------------------------------------ implement zero-copy writer ------------------------------------------
 
 // Malloc pre-allocates memory, which is not readable, and becomes readable data after submission(e.g. Flush).
-func (b *LinkBuffer) Malloc(n int) (buf []byte, err error) {
+func (b *LinkBuffer) Malloc(n int) (buf []byte, err error) {  // 在写对象上分配空间
 	if n <= 0 {
 		return
 	}
@@ -396,7 +396,7 @@ func (b *LinkBuffer) Append(w Writer) (err error) {
 // WriteBuffer will not submit(e.g. Flush) data to ensure normal use of MallocLen.
 // you must actively submit before read the data.
 // The argument buf can't be used after calling WriteBuffer. (set it to nil)
-func (b *LinkBuffer) WriteBuffer(buf *LinkBuffer) (err error) {
+func (b *LinkBuffer) WriteBuffer(buf *LinkBuffer) (err error) {  // 把一个 link-buffer 挂在另一个 linkbuffer 的上面
 	if buf == nil {
 		return
 	}
@@ -466,7 +466,7 @@ func (b *LinkBuffer) WriteBinary(p []byte) (n int, err error) {
 }
 
 // WriteDirect cannot be mixed with WriteString or WriteBinary functions.
-func (b *LinkBuffer) WriteDirect(p []byte, remainLen int) error {
+func (b *LinkBuffer) WriteDirect(p []byte, remainLen int) error {  // 处理那种要写一个数据头的情况
 	n := len(p)
 	if n == 0 || remainLen < 0 {
 		return nil
@@ -557,12 +557,12 @@ func (b *LinkBuffer) Bytes() []byte {
 }
 
 // GetBytes will read and fill the slice p as much as possible.
-func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {  // 在写 buffer 中使用
+func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) { // 在写 buffer 中使用
 	node, flush := b.read, b.flush
 	var i int
 	for i = 0; node != flush && i < len(p); node = node.next {
 		if node.Len() > 0 {
-			p[i] = node.buf[node.off:]  // 把每一块数据的 slice 赋值上去
+			p[i] = node.buf[node.off:] // 把每一块数据的 slice 赋值上去
 			i++
 		}
 	}
@@ -570,7 +570,7 @@ func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {  // 在写 buffer 中�
 		p[i] = flush.buf[flush.off:]
 		i++
 	}
-	return p[:i]  // 返回已经填充好的块
+	return p[:i] // 返回已经填充好的块
 }
 
 // book will grow and malloc buffer to hold data.
@@ -617,13 +617,13 @@ func (b *LinkBuffer) calcMaxSize() (sum int) {
 }
 
 // indexByte returns the index of the first instance of c in buffer, or -1 if c is not present in buffer.
-func (b *LinkBuffer) indexByte(c byte, skip int) int {
+func (b *LinkBuffer) indexByte(c byte, skip int) int {  // 在缓冲区中查找某个字符
 	size := b.Len()
 	if skip >= size {
 		return -1
 	}
 	var unread, n, l int
-	node := b.read
+	node := b.read  // 建立副本来遍历链表
 	for unread = size; unread > 0; unread -= n {
 		l = node.Len()
 		if l >= unread { // last node
@@ -638,7 +638,7 @@ func (b *LinkBuffer) indexByte(c byte, skip int) int {
 			node = node.next
 			continue
 		}
-		i := bytes.IndexByte(node.Peek(n)[skip:], c)
+		i := bytes.IndexByte(node.Peek(n)[skip:], c)  // todo: 使用 simd 的好场合
 		if i >= 0 {
 			return (size - unread) + skip + i // past_read + skip_read + index
 		}
@@ -701,29 +701,29 @@ type linkBufferNode struct { // 链表节点的格式 // 猜测是按照 ring bu
 	off      int             // read-offset  // 指向上面 buffer 数组的结束位置  // 默认 0  // 在有数据的时候，这个字段指向数据的开始位置
 	malloc   int             // write-offset  // 默认  0
 	refer    int32           // reference count  // 默认  1
-	readonly bool            // read-only node, introduced by Refer, WriteString, WriteBinary, etc., default false  // 默认 false
-	origin   *linkBufferNode // the root node of the extends
+	readonly bool            // read-only node, introduced by Refer, WriteString, WriteBinary, etc., default false  // 默认 false  // 当用于 origin 的置换数据时，链表是 readonly 状态。相当于它的空间不是自己分配的，而是引用了自身的 buf
+	origin   *linkBufferNode // the root node of the extends  // ??? 没看懂干啥的  // 一开始是  nil，相当于用于置换数据的链表
 	next     *linkBufferNode // the next node of the linked buffer
 }
 
 func (node *linkBufferNode) Len() (l int) { // buffer 中实际存储的数据长度
-	return len(node.buf) - node.off // ??? 不懂为什么要这样计算单个链表节点内的数据长度
+	return len(node.buf) - node.off // 数据先  append 到 node.buf, 因此 len(node.buf)指向数据的结尾; node.off 指向读位置
 }
 
 func (node *linkBufferNode) IsEmpty() (ok bool) {
-	return node.off == len(node.buf) // ??? 为什么这么写，难道是环形缓冲区
+	return node.off == len(node.buf) //  读位置指向数据末尾位置，说明为空
 }
 
 func (node *linkBufferNode) Reset() {
 	if node.origin != nil || atomic.LoadInt32(&node.refer) != 1 {
-		return
+		return // 存在原始置换数据的链表，且链表节点不止一个引用的时候，禁止 reset  // ??? 只要有引用，都不应该 reset 啊
 	}
 	node.off, node.malloc = 0, 0
-	node.buf = node.buf[:0]
+	node.buf = node.buf[:0] // 缓冲区恢复到没有数据的状态
 	return
 }
 
-func (node *linkBufferNode) Next(n int) (p []byte) {
+func (node *linkBufferNode) Next(n int) (p []byte) { // 从单个链表节点消费 n 个字节
 	off := node.off
 	node.off += n // 消费式的读取，数据开始的指针向前偏移  n 字节
 	return node.buf[off:node.off]
@@ -733,24 +733,24 @@ func (node *linkBufferNode) Peek(n int) (p []byte) { // 返回 buf 内有效的�
 	return node.buf[node.off : node.off+n]
 }
 
-func (node *linkBufferNode) Malloc(n int) (buf []byte) {
-	malloc := node.malloc
-	node.malloc += n                    // 第一次，这个值为  8kb
+func (node *linkBufferNode) Malloc(n int) (buf []byte) {  // 猜测是在写数据的场景，把链表节点的缓冲区`分配`出去，然后用户可以copy 数据到缓冲区里
+	malloc := node.malloc  // node.malloc 一开始为  0
+	node.malloc += n                    // 第一次，n 的值为  8kb
 	return node.buf[malloc:node.malloc] // 把  malloc 得到的 8kb 取出来用
 }
 
 // Refer holds a reference count at the same time as Next, and releases the real buffer after Release.
-// The node obtained by Refer is read-only.
-func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) { // 猜测是增加链表节点的引用计数
+// The node obtained by Refer is read-only.  // 当需要以  reader 的方式来消费这些数据的时候，把这些数据转移到另一个链表上
+func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) { // 把当前节点的 n 字节数据，放到另一个链表上去  // ??? 这是为了干啥啊? 相当于是置换了一部分数据出去
 	p = newLinkBufferNode(0)
-	p.buf = node.Next(n)
+	p.buf = node.Next(n) // 把当前节点的数据消费出来，放在一个新节点
 
 	if node.origin != nil {
-		p.origin = node.origin
+		p.origin = node.origin // 相当于在原来 origin 链表的链表头，再插入了一个节点
 	} else {
-		p.origin = node
+		p.origin = node // p.origin 指向旧的节点
 	}
-	atomic.AddInt32(&p.origin.refer, 1)
+	atomic.AddInt32(&p.origin.refer, 1) // 旧节点引用计数加 1
 	return p
 }
 
@@ -758,17 +758,17 @@ func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) { // 猜测是增�
 // 1. reduce the reference count of itself and origin.
 // 2. recycle the buf when the reference count is 0.
 func (node *linkBufferNode) Release() (err error) { // 释放链表节点
-	if node.origin != nil {
-		node.origin.Release() // 把链表头释放了
+	if node.origin != nil { // 如果存在一个用于置换数据的链表，把这个置换数据的链表进行 Release
+		node.origin.Release() // 把链表头释放了; 如果链表有多个节点，这里会递归调用
 	}
 	// release self
-	if atomic.AddInt32(&node.refer, -1) == 0 {
+	if atomic.AddInt32(&node.refer, -1) == 0 { // 引用计数为 0  的时候才真正释放
 		// readonly nodes cannot recycle node.buf, other node.buf are recycled to mcache.
-		if !node.readonly {
+		if !node.readonly { // ??? 只读节点的内存又是怎么来的呢?
 			free(node.buf) // 如果不是只读节点，释放回  slab 内存池
 		}
 		node.buf, node.origin, node.next = nil, nil, nil
-		linkedPool.Put(node) // 只读节点，释放回  pool 中
+		linkedPool.Put(node) // 释放回  pool 中
 	}
 	return nil
 }
@@ -776,33 +776,33 @@ func (node *linkBufferNode) Release() (err error) { // 释放链表节点
 // ------------------------------------------ private function ------------------------------------------
 
 // growth directly create the next node, when b.write is not enough.
-func (b *LinkBuffer) growth(n int) {
+func (b *LinkBuffer) growth(n int) {  // 为链表的写空间提升 n 字节
 	if n <= 0 {
 		return
 	}
 	// Must skip read-only node.
 	for b.write.readonly || cap(b.write.buf)-b.write.malloc < n {
 		if b.write.next == nil {
-			b.write.next = newLinkBufferNode(n)
+			b.write.next = newLinkBufferNode(n)  // 在链表的末尾追加一个节点，用于写
 			b.write = b.write.next
 			return
 		}
 		b.write = b.write.next
-	}
+	}  // 循环内部的代码没执行，说明空间足够
 }
 
 // isSingleNode determines whether reading needs to cross nodes.
 // Must require b.Len() > 0
-func (b *LinkBuffer) isSingleNode(readN int) (single bool) {
+func (b *LinkBuffer) isSingleNode(readN int) (single bool) { // ??? 这个判断是否单节点的逻辑也看不太懂
 	if readN <= 0 {
 		return true
 	}
-	l := b.read.Len() // b.read 一开始指向链表的第一个节点
-	for l == 0 && b.read != b.flush {
-		b.read = b.read.next // ??? 不明白这个循环体的作用是什么
+	l := b.read.Len()                 // b.read 一开始指向链表的第一个节点
+	for l == 0 && b.read != b.flush { // 长度为 0， 说明这个节点没数据，要去下一个节点找;  b.read != b.flush 这个猜测是读写指针的位置
+		b.read = b.read.next // 指向下一个链表节点
 		l = b.read.Len()
 	}
-	return l >= readN
+	return l >= readN // 遍历整个链表，直到找到有数据的节点; 如果这个节点的数据大于用户需求的数据，只需要读这个节点就够了
 }
 
 // zero-copy slice convert to string

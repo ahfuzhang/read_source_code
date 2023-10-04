@@ -196,13 +196,13 @@ func (p *defaultPoll) handler(events []epollevent) (closed bool) { // 当事件�
 		if triggerWrite {
 			if operator.OnWrite != nil {
 				// for non-connection
-				operator.OnWrite(p)
+				operator.OnWrite(p)  // 这里看不懂， server fd 会产生写事件吗?
 			} else if operator.Outputs != nil {
 				// for connection
-				var bs, supportZeroCopy = operator.Outputs(p.barriers[i].bs) // 触发写事件
+				var bs, supportZeroCopy = operator.Outputs(p.barriers[i].bs) // 触发写事件,  bs 是填充好的各个数据块
 				if len(bs) > 0 {
 					// TODO: Let the upper layer pass in whether to use ZeroCopy.
-					var n, err = iosend(operator.FD, bs, p.barriers[i].ivs, false && supportZeroCopy)
+					var n, err = iosend(operator.FD, bs, p.barriers[i].ivs, false && supportZeroCopy)  // 这里通过系统调用发送数据
 					operator.OutputAck(n)
 					if err != nil {
 						p.appendHup(operator)
@@ -251,7 +251,7 @@ func (p *defaultPoll) Control(operator *FDOperator, event PollEvent) error { // 
 	case PollDetach: // deregister
 		p.delOperator(operator)
 		op, evt.events = syscall.EPOLL_CTL_DEL, syscall.EPOLLIN|syscall.EPOLLOUT|syscall.EPOLLRDHUP|syscall.EPOLLERR
-	case PollR2RW: // connection wait read/write
+	case PollR2RW: // connection wait read/write  // socket send buffer full 的时候，注册这个事件
 		op, evt.events = syscall.EPOLL_CTL_MOD, syscall.EPOLLIN|syscall.EPOLLOUT|syscall.EPOLLRDHUP|syscall.EPOLLERR
 	case PollRW2R: // connection wait read
 		op, evt.events = syscall.EPOLL_CTL_MOD, syscall.EPOLLIN|syscall.EPOLLRDHUP|syscall.EPOLLERR

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mux
+package mux  // ??? 看不明白这个类是要干啥
 
 import (
 	"fmt"
@@ -37,10 +37,10 @@ import (
 var ShardSize int
 
 func init() {
-	ShardSize = runtime.GOMAXPROCS(0)
+	ShardSize = runtime.GOMAXPROCS(0)  // 有多少个核就分多少片，减少锁竞争
 }
 
-// NewShardQueue .
+// NewShardQueue .  // size 是分片的大小，默认使用  mux.ShardSize
 func NewShardQueue(size int, conn netpoll.Connection) (queue *ShardQueue) {
 	queue = &ShardQueue{
 		conn:    conn,
@@ -63,8 +63,8 @@ type WriterGetter func() (buf netpoll.Writer, isNil bool)
 // The Data Flush is passively triggered by ShardQueue.Add and does not require user operations.
 // If there is an error in the data transmission, the connection will be closed.
 // ShardQueue.Add: add the data to be sent.
-type ShardQueue struct {
-	conn      netpoll.Connection
+type ShardQueue struct {  // 分片队列
+	conn      netpoll.Connection  // 客户端连接对象
 	idx, size int32
 	getters   [][]WriterGetter // len(getters) = size
 	swap      []WriterGetter   // use for swap
@@ -92,9 +92,9 @@ type queueTrigger struct {
 // Add adds to q.getters[shard]
 func (q *ShardQueue) Add(gts ...WriterGetter) {
 	if atomic.LoadInt32(&q.state) != active {
-		return
+		return  // ??? 加不进去不应该报个错吗?
 	}
-	shard := atomic.AddInt32(&q.idx, 1) % q.size
+	shard := atomic.AddInt32(&q.idx, 1) % q.size  // 原子加来获取分片，相当于  round robin 算法
 	q.lock(shard)
 	trigger := len(q.getters[shard]) == 0
 	q.getters[shard] = append(q.getters[shard], gts...)

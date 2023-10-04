@@ -115,21 +115,21 @@ func (c *connection) inputAck(n int) (err error) { // inputAck 意思是对  inp
 	return nil
 }
 
-// outputs implements FDOperator.
+// outputs implements FDOperator.  // 在 epoll_wait 事件循环中触发, 写事件触发的时候，走到这里
 func (c *connection) outputs(vs [][]byte) (rs [][]byte, supportZeroCopy bool) {
 	if c.outputBuffer.IsEmpty() {
 		c.rw2r()
 		return rs, c.supportZeroCopy
 	}
-	rs = c.outputBuffer.GetBytes(vs)
+	rs = c.outputBuffer.GetBytes(vs)  // 把多块数据的引用构造好
 	return rs, c.supportZeroCopy
 }
 
 // outputAck implements FDOperator.
-func (c *connection) outputAck(n int) (err error) {
+func (c *connection) outputAck(n int) (err error) {  // epoll_wait 协程中，使用 sendmsg 之后，来到这里
 	if n > 0 {
-		c.outputBuffer.Skip(n)
-		c.outputBuffer.Release()
+		c.outputBuffer.Skip(n)  // 把  n 字节标记为无效
+		c.outputBuffer.Release()  // 可能需要释放一些链表节点
 	}
 	if c.outputBuffer.IsEmpty() {
 		c.rw2r()

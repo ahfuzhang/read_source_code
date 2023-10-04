@@ -46,7 +46,7 @@ type pollDesc struct {
 func (pd *pollDesc) WaitWrite(ctx context.Context) (err error) {
 	if pd.operator.isUnused() {
 		// add ET|Write|Hup
-		if err = pd.operator.Control(PollWritable); err != nil {
+		if err = pd.operator.Control(PollWritable); err != nil {  // 这里把写事件注册上去
 			logger.Printf("NETPOLL: pollDesc register operator failed: %v", err)
 			return err
 		}

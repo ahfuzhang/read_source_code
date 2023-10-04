@@ -45,7 +45,7 @@ type connection struct {
 	outputBuffer    *LinkBuffer // 一开始是  0  空间，并且只读
 	inputBarrier    *barrier
 	outputBarrier   *barrier
-	supportZeroCopy bool
+	supportZeroCopy bool    // 是否支持零拷贝的标志。但是代码中故意写了  false，目前不支持
 	maxSize         int // The maximum size of data between two Release().  // 这两个值的初始值是 8kb, 如果数据的最大长度比这个还大，maxSize = length
 	bookSize        int // The size of data that can be read at once.  // c.Inputs 中需要使用这个大小  初始值是 8kb
 }
@@ -121,7 +121,7 @@ func (c *connection) Skip(n int) (err error) {
 	return c.inputBuffer.Skip(n)
 }
 
-// Release implements Connection.
+// Release implements Connection.  // reader 的  Release 方法
 func (c *connection) Release() (err error) {
 	// Check inputBuffer length first to reduce contention in mux situation.
 	// c.operator.do competes with c.inputs/c.inputAck
@@ -177,7 +177,7 @@ func (c *connection) Until(delim byte) (line []byte, err error) {
 	}
 }
 
-// ReadString implements Connection.
+// ReadString implements Connection.  // 读出 n 个字节的字符串  // 消费式的读取
 func (c *connection) ReadString(n int) (s string, err error) {
 	if err = c.waitRead(n); err != nil {
 		return s, err
@@ -186,7 +186,7 @@ func (c *connection) ReadString(n int) (s string, err error) {
 }
 
 // ReadBinary implements Connection.
-func (c *connection) ReadBinary(n int) (p []byte, err error) {
+func (c *connection) ReadBinary(n int) (p []byte, err error) {  // 消费式的读取
 	if err = c.waitRead(n); err != nil {
 		return p, err
 	}
@@ -194,7 +194,7 @@ func (c *connection) ReadBinary(n int) (p []byte, err error) {
 }
 
 // ReadByte implements Connection.
-func (c *connection) ReadByte() (b byte, err error) {
+func (c *connection) ReadByte() (b byte, err error) {  // 消费式的读取
 	if err = c.waitRead(1); err != nil {
 		return b, err
 	}
@@ -219,13 +219,13 @@ func (c *connection) MallocLen() (length int) {
 // Flush first checks whether the out buffer is empty.
 // If empty, it will call syscall.Write to send data directly,
 // otherwise the buffer will be sent asynchronously by the epoll trigger.
-func (c *connection) Flush() error {
+func (c *connection) Flush() error {  // 在发送数据完成后调用
 	if !c.IsActive() || !c.lock(flushing) {
 		return Exception(ErrConnClosed, "when flush")
 	}
 	defer c.unlock(flushing)
 	c.outputBuffer.Flush()
-	return c.flush()
+	return c.flush()  // 这里调用 sendmsg 直接发送  // 发送不完会注册写事件，等着下次发送
 }
 
 // MallocAck implements Connection.
@@ -238,7 +238,7 @@ func (c *connection) Append(w Writer) (err error) {
 	return c.outputBuffer.Append(w)
 }
 
-// WriteString implements Connection.
+// WriteString implements Connection.  // 发送数据阶段，使用此方法
 func (c *connection) WriteString(s string) (n int, err error) {
 	return c.outputBuffer.WriteString(s)
 }
@@ -290,7 +290,7 @@ func (c *connection) Write(p []byte) (n int, err error) {
 	dst, _ := c.outputBuffer.Malloc(len(p))
 	n = copy(dst, p) // 发送数据必然导致一次拷贝
 	c.outputBuffer.Flush()
-	err = c.flush()
+	err = c.flush()  // 这里调用  sendmsg 来发送数据
 	return n, err
 }
 
@@ -338,7 +338,7 @@ func (c *connection) init(conn Conn, opts *options) (err error) {
 	// check zero-copy
 	if setZeroCopy(c.fd) == nil && setBlockZeroCopySend(c.fd, defaultZeroCopyTimeoutSec, 0) == nil {
 		c.supportZeroCopy = true
-	} // 牛叉啊，零拷贝也支持。这里是怎么支持零拷贝的呢?  ???
+	} // 写了零拷贝，但是实际实现中并未支持零拷贝
 
 	// connection initialized and prepare options
 	return c.onPrepare(opts) // 触发 prepare 事件
@@ -484,7 +484,7 @@ func (c *connection) flush() error {
 	if c.outputBuffer.IsEmpty() {
 		return nil
 	}
-	err = c.operator.Control(PollR2RW)
+	err = c.operator.Control(PollR2RW)  // 如果数据没有一次性发出去，说明socket write buffer 满了。这时候就需要注册这个写事件
 	if err != nil {
 		return Exception(err, "when flush")
 	}

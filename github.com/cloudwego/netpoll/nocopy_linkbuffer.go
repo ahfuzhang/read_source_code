@@ -154,7 +154,7 @@ func (b *LinkBuffer) Peek(n int) (p []byte, err error) {
 }
 
 // Skip implements Reader.
-func (b *LinkBuffer) Skip(n int) (err error) {
+func (b *LinkBuffer) Skip(n int) (err error) {  // 跳过 n 字节。 在 outputBuffer 中记录已经发送过的数据
 	if n <= 0 {
 		return
 	}
@@ -176,11 +176,11 @@ func (b *LinkBuffer) Skip(n int) (err error) {
 	return nil
 }
 
-// Release the node that has been read.
+// Release the node that has been read.  // 对应着  reader.Release()
 // b.flush == nil indicates that this LinkBuffer is created by LinkBuffer.Slice
 func (b *LinkBuffer) Release() (err error) {
 	for b.read != b.flush && b.read.Len() == 0 {
-		b.read = b.read.next
+		b.read = b.read.next // ??? 指向下一个有数据的块 ???
 	}
 	for b.head != b.read {
 		node := b.head
@@ -196,7 +196,7 @@ func (b *LinkBuffer) Release() (err error) {
 }
 
 // ReadString implements Reader.
-func (b *LinkBuffer) ReadString(n int) (s string, err error) {
+func (b *LinkBuffer) ReadString(n int) (s string, err error) { // 消费式的读取
 	if n <= 0 {
 		return
 	}
@@ -208,7 +208,7 @@ func (b *LinkBuffer) ReadString(n int) (s string, err error) {
 }
 
 // ReadBinary implements Reader.
-func (b *LinkBuffer) ReadBinary(n int) (p []byte, err error) {
+func (b *LinkBuffer) ReadBinary(n int) (p []byte, err error) { // 消费式的读取
 	if n <= 0 {
 		return
 	}
@@ -221,7 +221,7 @@ func (b *LinkBuffer) ReadBinary(n int) (p []byte, err error) {
 
 // readBinary cannot use mcache, because the memory allocated by readBinary will not be recycled.
 func (b *LinkBuffer) readBinary(n int) (p []byte) {
-	b.recalLen(-n) // re-cal length
+	b.recalLen(-n) // re-cal length  // 消费式的读取
 
 	// single node
 	p = make([]byte, n)
@@ -247,7 +247,7 @@ func (b *LinkBuffer) readBinary(n int) (p []byte) {
 }
 
 // ReadByte implements Reader.
-func (b *LinkBuffer) ReadByte() (p byte, err error) {
+func (b *LinkBuffer) ReadByte() (p byte, err error) { // 消费式的读取
 	// check whether enough or not.
 	if b.Len() < 1 {
 		return p, errors.New("link buffer read byte is empty")
@@ -274,7 +274,7 @@ func (b *LinkBuffer) Until(delim byte) (line []byte, err error) {
 // and only holds the ability of Reader.
 //
 // Slice will automatically execute a Release.
-func (b *LinkBuffer) Slice(n int) (r Reader, err error) {  // 返回一个可以流式读取的 reader 对象
+func (b *LinkBuffer) Slice(n int) (r Reader, err error) { // 返回一个可以流式读取的 reader 对象
 	if n <= 0 {
 		return NewLinkBuffer(0), nil
 	}
@@ -295,7 +295,7 @@ func (b *LinkBuffer) Slice(n int) (r Reader, err error) {  // 返回一个可以
 	}()
 
 	// single node
-	if b.isSingleNode(n) {
+	if b.isSingleNode(n) { // 猜测是用引用计数的模式来共享链表节点
 		node := b.read.Refer(n)
 		p.head, p.read, p.flush = node, node, node
 		return p, nil
@@ -363,7 +363,7 @@ func (b *LinkBuffer) MallocAck(n int) (err error) {
 }
 
 // Flush will submit all malloc data and must confirm that the allocated bytes have been correctly assigned.
-func (b *LinkBuffer) Flush() (err error) {
+func (b *LinkBuffer) Flush() (err error) { // 完成数据发送后调用  // ??? 倒底做了啥
 	b.mallocSize = 0
 	// FIXME: The tail node must not be larger than 8KB to prevent Out Of Memory.
 	if cap(b.write.buf) > pagesize {
@@ -456,13 +456,13 @@ func (b *LinkBuffer) WriteBinary(p []byte) (n int, err error) {
 		// expand buffer directly with nocopy
 		b.write.next = newLinkBufferNode(0)
 		b.write = b.write.next
-		b.write.buf, b.write.malloc = p[:0], n
+		b.write.buf, b.write.malloc = p[:0], n // 大于 4kb 的时候，只是简单的把对象的引用赋值上去。这也太儿戏了吧
 		return n, nil
 	}
 	// here will copy
 	b.growth(n)
 	buf := b.write.Malloc(n)
-	return copy(buf, p), nil
+	return copy(buf, p), nil // 拷贝到链表节点的空间
 }
 
 // WriteDirect cannot be mixed with WriteString or WriteBinary functions.
@@ -483,7 +483,7 @@ func (b *LinkBuffer) WriteDirect(p []byte, remainLen int) error {
 
 	// Create dataNode and newNode and insert them into the chain
 	dataNode := newLinkBufferNode(0)
-	dataNode.buf, dataNode.malloc = p[:0], n
+	dataNode.buf, dataNode.malloc = p[:0], n // 直接赋值肯定不会拷贝，但是总觉得很危险
 
 	if remainLen > 0 {
 		newNode := newLinkBufferNode(0)
@@ -557,12 +557,12 @@ func (b *LinkBuffer) Bytes() []byte {
 }
 
 // GetBytes will read and fill the slice p as much as possible.
-func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {
+func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {  // 在写 buffer 中使用
 	node, flush := b.read, b.flush
 	var i int
 	for i = 0; node != flush && i < len(p); node = node.next {
 		if node.Len() > 0 {
-			p[i] = node.buf[node.off:]
+			p[i] = node.buf[node.off:]  // 把每一块数据的 slice 赋值上去
 			i++
 		}
 	}
@@ -570,7 +570,7 @@ func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {
 		p[i] = flush.buf[flush.off:]
 		i++
 	}
-	return p[:i]
+	return p[:i]  // 返回已经填充好的块
 }
 
 // book will grow and malloc buffer to hold data.
@@ -741,7 +741,7 @@ func (node *linkBufferNode) Malloc(n int) (buf []byte) {
 
 // Refer holds a reference count at the same time as Next, and releases the real buffer after Release.
 // The node obtained by Refer is read-only.
-func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) {  // 猜测是增加链表节点的引用计数
+func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) { // 猜测是增加链表节点的引用计数
 	p = newLinkBufferNode(0)
 	p.buf = node.Next(n)
 
@@ -757,18 +757,18 @@ func (node *linkBufferNode) Refer(n int) (p *linkBufferNode) {  // 猜测是增�
 // Release consists of two parts:
 // 1. reduce the reference count of itself and origin.
 // 2. recycle the buf when the reference count is 0.
-func (node *linkBufferNode) Release() (err error) {
+func (node *linkBufferNode) Release() (err error) { // 释放链表节点
 	if node.origin != nil {
-		node.origin.Release()
+		node.origin.Release() // 把链表头释放了
 	}
 	// release self
 	if atomic.AddInt32(&node.refer, -1) == 0 {
 		// readonly nodes cannot recycle node.buf, other node.buf are recycled to mcache.
 		if !node.readonly {
-			free(node.buf)
+			free(node.buf) // 如果不是只读节点，释放回  slab 内存池
 		}
 		node.buf, node.origin, node.next = nil, nil, nil
-		linkedPool.Put(node)
+		linkedPool.Put(node) // 只读节点，释放回  pool 中
 	}
 	return nil
 }

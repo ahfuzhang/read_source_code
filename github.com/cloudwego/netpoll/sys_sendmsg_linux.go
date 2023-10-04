@@ -31,7 +31,7 @@ import (
 
 // sendmsg wraps the sendmsg system call.
 // Must len(iovs) >= len(vs)
-func sendmsg(fd int, bs [][]byte, ivs []syscall.Iovec, zerocopy bool) (n int, err error) {
+func sendmsg(fd int, bs [][]byte, ivs []syscall.Iovec, zerocopy bool) (n int, err error) {  // 这个系统调用类似于  writev
 	iovLen := iovecs(bs, ivs)
 	if iovLen == 0 {
 		return 0, nil

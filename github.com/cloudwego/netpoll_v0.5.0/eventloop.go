@@ -61,7 +61,7 @@ type OnPrepare func(connection Connection) context.Context
 //  func onRequest(ctx context.Context, upstream netpoll.Connection) error {
 //    downstream := ctx.Value(downstreamKey).(netpoll.Connection)
 //  }
-type OnConnect func(ctx context.Context, connection Connection) context.Context
+type OnConnect func(ctx context.Context, connection Connection) context.Context  // 客户端使用情况下的回调
 
 // OnRequest defines the function for handling connection. When data is sent from the connection peer,
 // netpoll actively reads the data in LT mode and places it in the connection's input buffer.

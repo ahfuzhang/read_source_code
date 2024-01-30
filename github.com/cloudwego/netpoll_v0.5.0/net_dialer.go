@@ -23,13 +23,13 @@ import (
 	"time"
 )
 
-// DialConnection is a default implementation of Dialer.
+// DialConnection is a default implementation of Dialer.  // 使用默认客户端
 func DialConnection(network, address string, timeout time.Duration) (connection Connection, err error) {
 	return defaultDialer.DialConnection(network, address, timeout)
 }
 
 // NewDialer only support TCP and unix socket now.
-func NewDialer() Dialer {
+func NewDialer() Dialer {  // 客户端对象
 	return &dialer{}
 }
 
@@ -42,7 +42,7 @@ func (d *dialer) DialTimeout(network, address string, timeout time.Duration) (ne
 	return d.DialConnection(network, address, timeout)
 }
 
-// DialConnection implements Dialer.
+// DialConnection implements Dialer.  //链接到一个地址，返回  connection 对象
 func (d *dialer) DialConnection(network, address string, timeout time.Duration) (connection Connection, err error) {
 	ctx := context.Background()
 	if timeout > 0 {
@@ -64,7 +64,7 @@ func (d *dialer) DialConnection(network, address string, timeout time.Duration) 
 		return nil, net.UnknownNetworkError(network)
 	}
 }
-
+// 发起 tcp 连接
 func (d *dialer) dialTCP(ctx context.Context, network, address string) (connection *TCPConnection, err error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -79,7 +79,7 @@ func (d *dialer) dialTCP(ctx context.Context, network, address string) (connecti
 	if host == "" {
 		ipaddrs = []net.IPAddr{{}}
 	} else {
-		ipaddrs, err = net.DefaultResolver.LookupIPAddr(ctx, host)
+		ipaddrs, err = net.DefaultResolver.LookupIPAddr(ctx, host)  // dns 查询
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +97,7 @@ func (d *dialer) dialTCP(ctx context.Context, network, address string) (connecti
 		if ipaddr.IP != nil && ipaddr.IP.To4() == nil {
 			connection, err = DialTCP(ctx, "tcp6", nil, tcpAddr)
 		} else {
-			connection, err = DialTCP(ctx, "tcp", nil, tcpAddr)
+			connection, err = DialTCP(ctx, "tcp", nil, tcpAddr)  // 产生了连接对象
 		}
 		if err == nil {
 			return connection, nil

@@ -1,0 +1,11 @@
+/.idea
+/.vscode
+/.build
+
+*.tar.gz
+coverage.txt
+/prometheus-webhook-dingtalk
+/config.yml
+
+/web/ui/static/react
+/web/ui/assets_vfsdata.go

@@ -147,7 +147,7 @@ func newTCPConnection(conn Conn) (connection *TCPConnection, err error) {
 	return connection, nil
 }
 
-// DialTCP acts like Dial for TCP networks.
+// DialTCP acts like Dial for TCP networks.  // 发起 tcp 连接
 //
 // The network must be a TCP network name; see func Dial for details.
 //
@@ -173,7 +173,7 @@ func DialTCP(ctx context.Context, network string, laddr, raddr *TCPAddr) (*TCPCo
 	}
 	return c, nil
 }
-
+// 发起 tcp 连接
 func (sd *sysDialer) dialTCP(ctx context.Context, laddr, raddr *TCPAddr) (*TCPConnection, error) {
 	conn, err := internetSocket(ctx, sd.network, laddr, raddr, syscall.SOCK_STREAM, 0, "dial")
 

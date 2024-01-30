@@ -1,0 +1,15 @@
+verify
+speed
+check
+benchmark
+verify_*
+speed_*
+check_*
+benchmark_*
+
+unpack_test
+
+raw-results.txt
+results.txt
+table.txt
+pin-log.txt

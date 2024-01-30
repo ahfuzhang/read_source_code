@@ -101,7 +101,7 @@ func favoriteAddrFamily(network string, laddr, raddr sockaddr) (family int, ipv6
 }
 
 // socket returns a network file descriptor that is ready for
-// asynchronous I/O using the network poller.
+// asynchronous I/O using the network poller.  // 就算创建  socket，也是自己从头包装的
 func socket(ctx context.Context, net string, family, sotype, proto int, ipv6only bool, laddr, raddr sockaddr) (netfd *netFD, err error) {
 	// syscall.Socket & set socket options
 	var fd int

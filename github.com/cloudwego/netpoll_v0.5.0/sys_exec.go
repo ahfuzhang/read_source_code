@@ -75,7 +75,7 @@ func writev(fd int, bs [][]byte, ivs []syscall.Iovec) (n int, err error) {
 		return int(r), syscall.Errno(e)
 	}
 	return int(r), nil
-}
+} 
 
 // readv wraps the readv system call.  // 对 linux 的 readv 的封装
 // return 0, nil means EOF.
